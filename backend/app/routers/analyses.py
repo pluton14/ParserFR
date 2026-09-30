@@ -23,7 +23,8 @@ from ..schemas import (
     KeywordStats,
     clean_keywords,
 )
-from ..services.analysis import ANALYSABLE, run_analysis, unpack
+from ..services.analysis import ANALYSABLE, unpack
+from ..services.analysis_process import run_analysis_in_process
 from ..services.jobs import registry
 
 router = APIRouter(prefix="/api/analyses", tags=["analyses"])
@@ -117,12 +118,12 @@ def start_analysis(payload: AnalysisRequest, db: Session = Depends(get_db)) -> J
 
     def target(handle):
         try:
-            run_analysis(
+            run_analysis_in_process(
                 handle,
-                analysis_id,
-                payload.start_date,
-                payload.end_date,
-                keywords,
+                analysis_id=analysis_id,
+                start=payload.start_date,
+                end=payload.end_date,
+                keywords=keywords,
                 categories=payload.categories,
                 text_scope=payload.text_scope,
             )
