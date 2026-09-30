@@ -1,0 +1,200 @@
+{
+  "timestamp": "2025-05-20 21:45:52",
+  "total_processed_articles": 545,
+  "keywords": [
+    "invasion russe",
+    "troupes russes",
+    "autorités russes",
+    "soldats russes",
+    "Crimée annexée",
+    "union soviétique",
+    "république soviétique",
+    "ex-république soviétique",
+    "forces russes",
+    "séparatiste prorusse",
+    "armée russe",
+    "guerre en Ukraine",
+    "Église orthodoxe russe",
+    "Église indépendante ukrainienne",
+    "ministère russe",
+    "président russe"
+  ],
+  "statistics": {
+    "invasion russe": {
+      "total_occurrences": 1,
+      "total_articles": 1,
+      "total_words_in_articles": 3881,
+      "percentage_in_articles": 100.0,
+      "percentage_of_all_words": 0.02576655501159495,
+      "categories": {
+        "International": 1
+      },
+      "neighbor_words": {
+        "nouvelle": 1,
+        "à": 1
+      }
+    },
+    "troupes russes": {
+      "total_occurrences": 0,
+      "total_articles": 0,
+      "total_words_in_articles": 0,
+      "percentage_in_articles": 0,
+      "percentage_of_all_words": 0,
+      "categories": {},
+      "neighbor_words": {}
+    },
+    "autorités russes": {
+      "total_occurrences": 0,
+      "total_articles": 0,
+      "total_words_in_articles": 0,
+      "percentage_in_articles": 0,
+      "percentage_of_all_words": 0,
+      "categories": {},
+      "neighbor_words": {}
+    },
+    "soldats russes": {
+      "total_occurrences": 0,
+      "total_articles": 0,
+      "total_words_in_articles": 0,
+      "percentage_in_articles": 0,
+      "percentage_of_all_words": 0,
+      "categories": {},
+      "neighbor_words": {}
+    },
+    "Crimée annexée": {
+      "total_occurrences": 1,
+      "total_articles": 1,
+      "total_words_in_articles": 3881,
+      "percentage_in_articles": 100.0,
+      "percentage_of_all_words": 0.02576655501159495,
+      "categories": {
+        "International": 1
+      },
+      "neighbor_words": {
+        "la": 1,
+        "en": 1
+      }
+    },
+    "union soviétique": {
+      "total_occurrences": 0,
+      "total_articles": 0,
+      "total_words_in_articles": 0,
+      "percentage_in_articles": 0,
+      "percentage_of_all_words": 0,
+      "categories": {},
+      "neighbor_words": {}
+    },
+    "république soviétique": {
+      "total_occurrences": 0,
+      "total_articles": 0,
+      "total_words_in_articles": 0,
+      "percentage_in_articles": 0,
+      "percentage_of_all_words": 0,
+      "categories": {},
+      "neighbor_words": {}
+    },
+    "ex-république soviétique": {
+      "total_occurrences": 0,
+      "total_articles": 0,
+      "total_words_in_articles": 0,
+      "percentage_in_articles": 0,
+      "percentage_of_all_words": 0,
+      "categories": {},
+      "neighbor_words": {}
+    },
+    "forces russes": {
+      "total_occurrences": 1,
+      "total_articles": 1,
+      "total_words_in_articles": 3881,
+      "percentage_in_articles": 100.0,
+      "percentage_of_all_words": 0.02576655501159495,
+      "categories": {
+        "International": 1
+      },
+      "neighbor_words": {
+        "des": 1,
+        "chez": 1
+      }
+    },
+    "séparatiste prorusse": {
+      "total_occurrences": 0,
+      "total_articles": 0,
+      "total_words_in_articles": 0,
+      "percentage_in_articles": 0,
+      "percentage_of_all_words": 0,
+      "categories": {},
+      "neighbor_words": {}
+    },
+    "armée russe": {
+      "total_occurrences": 0,
+      "total_articles": 0,
+      "total_words_in_articles": 0,
+      "percentage_in_articles": 0,
+      "percentage_of_all_words": 0,
+      "categories": {},
+      "neighbor_words": {}
+    },
+    "guerre en Ukraine": {
+      "total_occurrences": 4,
+      "total_articles": 4,
+      "total_words_in_articles": 4886,
+      "percentage_in_articles": 100.0,
+      "percentage_of_all_words": 0.08186655751125665,
+      "categories": {
+        "Flash Eco": 1,
+        "International": 3
+      },
+      "neighbor_words": {
+        "la": 4,
+        ",": 3,
+        "et": 1
+      }
+    },
+    "Église orthodoxe russe": {
+      "total_occurrences": 0,
+      "total_articles": 0,
+      "total_words_in_articles": 0,
+      "percentage_in_articles": 0,
+      "percentage_of_all_words": 0,
+      "categories": {},
+      "neighbor_words": {}
+    },
+    "Église indépendante ukrainienne": {
+      "total_occurrences": 0,
+      "total_articles": 0,
+      "total_words_in_articles": 0,
+      "percentage_in_articles": 0,
+      "percentage_of_all_words": 0,
+      "categories": {},
+      "neighbor_words": {}
+    },
+    "ministère russe": {
+      "total_occurrences": 0,
+      "total_articles": 0,
+      "total_words_in_articles": 0,
+      "percentage_in_articles": 0,
+      "percentage_of_all_words": 0,
+      "categories": {},
+      "neighbor_words": {}
+    },
+    "président russe": {
+      "total_occurrences": 12,
+      "total_articles": 12,
+      "total_words_in_articles": 28456,
+      "percentage_in_articles": 100.0,
+      "percentage_of_all_words": 0.042170368287883044,
+      "categories": {
+        "International": 12
+      },
+      "neighbor_words": {
+        "vladimir": 9,
+        "le": 9,
+        "du": 2,
+        "cherchait": 1,
+        "au": 1,
+        ":": 1,
+        "a": 1
+      }
+    }
+  }
+}

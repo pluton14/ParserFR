@@ -1,0 +1,273 @@
+"""Анализ: прогон словаря по уже собранному корпусу.
+
+Здесь нет сети. Всё, что нужно, — токены статей, которые сбор уже положил
+в базу. Поэтому смена словаря стоит секунды, а не часы: именно ради этого
+сбор и анализ разведены.
+
+Сами правила подсчёта (соседи слева/справа, окно примера, сопоставление
+словосочетаний) взяты из parser.py без изменений.
+"""
+
+from __future__ import annotations
+
+import json
+import zlib
+from dataclasses import asdict
+from datetime import date, datetime
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from ..config import settings
+from ..core.statistics import WordStatistics, build_keyword_plans, scan_article
+from ..core.tokenizer import tokenize_french_text
+from ..db import session_scope
+from ..models import Analysis, Article, ArticleStatus, JobStatus
+from .jobs import JobHandle
+
+# Что попадает в анализ. Обрезанные платные статьи включены сознательно:
+# затравка — это тоже настоящий текст Le Figaro, и терять её на корпусе,
+# где платных заметная доля, значило бы обеднить выборку сильнее, чем
+# исказить. Доля обрезанных показывается пользователю отдельно.
+ANALYSABLE = (ArticleStatus.OK.value, ArticleStatus.TRUNCATED.value)
+
+# Сколько статей тянуть из базы за раз, чтобы не держать корпус в памяти целиком.
+CHUNK_SIZE = 500
+
+
+def count_available_articles(
+    db: Session, start: date, end: date, categories: list[str] | None = None
+) -> tuple[int, int]:
+    """(статей с текстом, всего статей в корпусе) за период и категории."""
+    with_text_stmt = select(func.count()).select_from(Article).where(
+        Article.published_date.between(start, end),
+        Article.status.in_(ANALYSABLE),
+    )
+    total_stmt = select(func.count()).select_from(Article).where(
+        Article.published_date.between(start, end)
+    )
+    if categories:
+        with_text_stmt = with_text_stmt.where(Article.category.in_(categories))
+        total_stmt = total_stmt.where(Article.category.in_(categories))
+
+    with_text = db.execute(with_text_stmt).scalar_one()
+    total = db.execute(total_stmt).scalar_one()
+
+    return with_text, total
+
+
+def _article_words(article: Article, text_scope: str) -> list[str]:
+    """Слова статьи для сканирования — по выбранной зоне текста.
+
+    Находка 2026-09-28: заголовок токенизируется на лету, а не заранее —
+    он короткий (в отличие от текста статьи), лишняя нагрузка ничтожна, зато
+    работает ретроактивно для ВСЕХ уже собранных статей: title хранился
+    отдельным полем с самого начала, пересбор корпуса не требуется.
+    """
+    if text_scope == "title":
+        return tokenize_french_text(article.title or "")
+    if text_scope == "title_body":
+        return tokenize_french_text(article.title or "") + article.tokens
+    return article.tokens
+
+
+def _build_statistics_payload(
+    stats: dict[str, WordStatistics],
+    keywords: list[str],
+    start: date,
+    end: date,
+    total_processed_articles: int,
+) -> dict:
+    """Собирает JSON в том же формате, что писал parser.save_statistics_to_file.
+
+    Формат сохранён намеренно: старые файлы из папки statistics/ должны
+    открываться новым интерфейсом, а новые выгрузки — оставаться читаемыми
+    всем, что уже написано вокруг этого формата.
+    """
+    payload = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "search_period": {
+            "start_date": start.strftime("%Y-%m-%d"),
+            "end_date": end.strftime("%Y-%m-%d"),
+        },
+        "total_processed_articles": total_processed_articles,
+        "keywords": keywords,
+        "statistics": {},
+    }
+
+    top = settings.top_context_words
+    for keyword in keywords:
+        entry = stats.get(keyword)
+        if entry is None:
+            payload["statistics"][keyword] = {
+                "articles_with_word": 0,
+                "total_processed_articles": total_processed_articles,
+                "percentage": 0,
+                "left_context_words": {},
+                "right_context_words": {},
+            }
+            continue
+
+        percentage = (
+            (entry.articles_with_word / total_processed_articles * 100)
+            if total_processed_articles > 0
+            else 0
+        )
+        payload["statistics"][keyword] = {
+            "articles_with_word": entry.articles_with_word,
+            "total_processed_articles": total_processed_articles,
+            "percentage": round(percentage, 2),
+            "total_occurrences": entry.total_occurrences,
+            "left_context_words": dict(entry.left_context_words.most_common(top)),
+            "right_context_words": dict(entry.right_context_words.most_common(top)),
+        }
+
+    return payload
+
+
+def _build_timeseries(stats: dict[str, WordStatistics], keywords: list[str]) -> dict:
+    """Динамика по дням — то, чего в десктопной версии не было вовсе.
+
+    Считать её бесплатно: даты статей уже известны в момент сканирования.
+    """
+    series = {}
+    for keyword in keywords:
+        entry = stats.get(keyword)
+        if entry is None:
+            series[keyword] = []
+            continue
+        days = sorted(set(entry.occurrences_by_date) | set(entry.articles_by_date))
+        series[keyword] = [
+            {
+                "date": day,
+                "occurrences": entry.occurrences_by_date.get(day, 0),
+                "articles": entry.articles_by_date.get(day, 0),
+            }
+            for day in days
+        ]
+    return series
+
+
+def _pack(payload) -> bytes:
+    return zlib.compress(json.dumps(payload, ensure_ascii=False).encode("utf-8"), level=6)
+
+
+def unpack(blob: bytes | None):
+    if not blob:
+        return None
+    return json.loads(zlib.decompress(blob).decode("utf-8"))
+
+
+def run_analysis(
+    job: JobHandle,
+    analysis_id: int,
+    start: date,
+    end: date,
+    keywords: list[str],
+    categories: list[str] | None = None,
+    text_scope: str = "body",
+) -> None:
+    """Считает статистику по корпусу и записывает результат в analyses."""
+    plans = build_keyword_plans(keywords)
+    if not plans:
+        raise ValueError("Список ключевых слов пуст")
+
+    ordered_keywords = [plan.original for plan in plans]
+    stats: dict[str, WordStatistics] = {plan.original: WordStatistics() for plan in plans}
+
+    scope_label = {"body": "текст", "title": "заголовки", "title_body": "заголовки + текст"}[text_scope]
+    categories_label = f", категории: {', '.join(categories)}" if categories else ""
+    job.log(f"Анализ за {start} — {end}, ключевых слов: {len(plans)}, зона: {scope_label}{categories_label}")
+    job.set_progress(stage="counting", message="Считаем объём корпуса…")
+
+    with session_scope() as db:
+        with_text, total_in_corpus = count_available_articles(db, start, end, categories)
+
+    if with_text == 0:
+        raise ValueError(
+            "За этот период в корпусе нет статей с текстом. "
+            "Сначала соберите корпус на вкладке «Корпус»."
+        )
+
+    job.log(f"Статей с текстом: {with_text} (всего в корпусе за период: {total_in_corpus})")
+    job.set_progress(stage="scanning", current=0, total=with_text,
+                     message="Сканируем статьи…")
+
+    example_limit = settings.example_limit_per_keyword
+    processed = 0
+    last_id = 0
+
+    while True:
+        if job.is_cancelled():
+            return
+
+        with session_scope() as db:
+            stmt = (
+                select(Article)
+                .where(
+                    Article.published_date.between(start, end),
+                    Article.status.in_(ANALYSABLE),
+                    Article.id > last_id,
+                )
+                .order_by(Article.id)
+                .limit(CHUNK_SIZE)
+            )
+            if categories:
+                stmt = stmt.where(Article.category.in_(categories))
+            rows = db.execute(stmt).scalars().all()
+
+            if not rows:
+                break
+
+            for article in rows:
+                last_id = article.id
+                words = _article_words(article, text_scope)
+                if not words:
+                    continue
+
+                counts = scan_article(
+                    words,
+                    plans,
+                    stats,
+                    url=article.url,
+                    published_date=article.published_date.isoformat(),
+                    title=article.title,
+                    example_limit=example_limit,
+                )
+                for keyword, count in counts.items():
+                    if count > 0:
+                        stats[keyword].articles_with_word += 1
+
+                processed += 1
+
+        job.set_progress(current=processed, message=f"Обработано {processed}/{with_text}")
+
+    statistics_payload = _build_statistics_payload(
+        stats, ordered_keywords, start, end, with_text
+    )
+    statistics_payload["articles_in_corpus"] = total_in_corpus
+
+    examples_payload = {
+        keyword: [asdict(example) for example in stats[keyword].examples]
+        for keyword in ordered_keywords
+    }
+    timeseries_payload = _build_timeseries(stats, ordered_keywords)
+
+    job.set_progress(stage="saving", message="Сохраняем результат…")
+
+    with session_scope() as db:
+        row = db.get(Analysis, analysis_id)
+        if row is None:
+            raise ValueError(f"Анализ {analysis_id} не найден")
+        row.total_processed_articles = with_text
+        row.statistics_gz = _pack(statistics_payload)
+        row.examples_gz = _pack(examples_payload)
+        row.timeseries_gz = _pack(timeseries_payload)
+        row.status = JobStatus.DONE.value
+        row.finished_at = datetime.utcnow()
+
+    job.result_id = analysis_id
+    total_found = sum(stats[k].articles_with_word for k in ordered_keywords)
+    job.log(f"Готово. Статей с попаданиями: {total_found}.")
+    job.set_progress(stage="done", current=processed, total=with_text,
+                     message="Анализ завершён")

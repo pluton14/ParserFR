@@ -1,0 +1,91 @@
+"""Подключение к SQLite — локально файлом, в проде опционально через Turso.
+
+Отдельный сервер БД по умолчанию не поднимается: база — это один файл в
+data_dir. Для однопользовательской нагрузки (пачечная запись при сборе,
+чтение при анализе) этого достаточно, а стоит она ноль.
+
+Находка 2026-09-29: демо-деплой (Replit) не может унести с собой локальный
+файл в 3+ ГБ между перезапусками — вместо этого, если заданы
+PARSERFR_TURSO_DATABASE_URL/PARSERFR_TURSO_AUTH_TOKEN (или их
+Turso-псевдонимы без префикса), подключаемся к managed libSQL на Turso.
+Это тот же движок SQLite, просто удалённый — модели и запросы не меняются
+ни на строчку.
+"""
+
+from collections.abc import Iterator
+from contextlib import contextmanager
+
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import Session, sessionmaker
+
+from .config import settings
+
+_USING_TURSO = bool(settings.turso_database_url and settings.turso_auth_token)
+
+if _USING_TURSO:
+    # Формат из документации tursodatabase/libsql-sqlalchemy: хост без
+    # схемы (turso даёт его как "libsql://xxx.turso.io" — при копировании
+    # схему на всякий случай срезаем, чтобы не задваивалась).
+    _host = settings.turso_database_url.removeprefix("libsql://").removeprefix("https://")
+    engine = create_engine(
+        f"sqlite+libsql://{_host}?secure=true",
+        connect_args={"auth_token": settings.turso_auth_token},
+        pool_pre_ping=True,
+        future=True,
+    )
+else:
+    engine = create_engine(
+        settings.resolved_database_url,
+        # Сбор корпуса идёт в фоновом потоке, а SQLite по умолчанию
+        # запрещает использовать соединение вне создавшего его потока.
+        connect_args={"check_same_thread": False, "timeout": 30},
+        pool_pre_ping=True,
+        future=True,
+    )
+
+
+@event.listens_for(engine, "connect")
+def _configure_sqlite(dbapi_connection, connection_record) -> None:
+    # WAL/synchronous — только для локального файла. Turso сам управляет
+    # репликацией и журналированием на своей стороне; отправка этих PRAGMA
+    # туда — лишний риск без всякой пользы.
+    if _USING_TURSO:
+        return
+    cursor = dbapi_connection.cursor()
+    # WAL позволяет читать статистику, пока фоновый сбор пишет статьи.
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
+
+
+SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
+
+
+def get_db() -> Iterator[Session]:
+    """Зависимость FastAPI."""
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+@contextmanager
+def session_scope() -> Iterator[Session]:
+    """Сессия для фоновых задач, вне цикла запросов."""
+    db = SessionLocal()
+    try:
+        yield db
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def init_db() -> None:
+    from . import models  # noqa: F401  — регистрирует таблицы в метаданных
+
+    models.Base.metadata.create_all(bind=engine)

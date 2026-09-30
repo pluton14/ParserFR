@@ -1,0 +1,12 @@
+backend/data/
+backend/.venv/
+backend/__pycache__/
+backend/**/__pycache__/
+*.pyc
+.env
+.env.turso
+frontend/node_modules/
+frontend/dist/
+build/
+dist/
+__pycache__/

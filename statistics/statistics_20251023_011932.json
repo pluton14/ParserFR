@@ -1,0 +1,174 @@
+{
+  "timestamp": "2025-10-23 01:19:32",
+  "search_period": {
+    "start_date": "2025-10-22",
+    "end_date": "2025-10-23"
+  },
+  "total_processed_articles": 437,
+  "keywords": [
+    "invasion russe",
+    "troupes russes",
+    "autorités russes",
+    "soldats russes",
+    "Crimée annexée",
+    "union soviétique",
+    "république soviétique",
+    "ex-république soviétique",
+    "forces russes",
+    "séparatiste prorusse",
+    "armée russe",
+    "guerre en Ukraine",
+    "Église orthodoxe russe",
+    "Église indépendante ukrainienne",
+    "ministère russe",
+    "président russe"
+  ],
+  "statistics": {
+    "invasion russe": {
+      "articles_with_word": 0,
+      "total_processed_articles": 437,
+      "percentage": 0.0,
+      "left_context_words": {},
+      "right_context_words": {}
+    },
+    "troupes russes": {
+      "articles_with_word": 0,
+      "total_processed_articles": 437,
+      "percentage": 0.0,
+      "left_context_words": {},
+      "right_context_words": {}
+    },
+    "autorités russes": {
+      "articles_with_word": 1,
+      "total_processed_articles": 437,
+      "percentage": 0.23,
+      "left_context_words": {
+        "les": 1
+      },
+      "right_context_words": {
+        "l’ont": 1
+      }
+    },
+    "soldats russes": {
+      "articles_with_word": 0,
+      "total_processed_articles": 437,
+      "percentage": 0.0,
+      "left_context_words": {},
+      "right_context_words": {}
+    },
+    "Crimée annexée": {
+      "articles_with_word": 0,
+      "total_processed_articles": 437,
+      "percentage": 0.0,
+      "left_context_words": {},
+      "right_context_words": {}
+    },
+    "union soviétique": {
+      "articles_with_word": 0,
+      "total_processed_articles": 437,
+      "percentage": 0.0,
+      "left_context_words": {},
+      "right_context_words": {}
+    },
+    "république soviétique": {
+      "articles_with_word": 0,
+      "total_processed_articles": 437,
+      "percentage": 0.0,
+      "left_context_words": {},
+      "right_context_words": {}
+    },
+    "ex-république soviétique": {
+      "articles_with_word": 1,
+      "total_processed_articles": 437,
+      "percentage": 0.23,
+      "left_context_words": {
+        "cette": 1
+      },
+      "right_context_words": {
+        "ce": 1
+      }
+    },
+    "forces russes": {
+      "articles_with_word": 2,
+      "total_processed_articles": 437,
+      "percentage": 0.46,
+      "left_context_words": {
+        "les": 2
+      },
+      "right_context_words": {
+        "andrzej": 1,
+        "occupent": 1
+      }
+    },
+    "séparatiste prorusse": {
+      "articles_with_word": 0,
+      "total_processed_articles": 437,
+      "percentage": 0.0,
+      "left_context_words": {},
+      "right_context_words": {}
+    },
+    "armée russe": {
+      "articles_with_word": 1,
+      "total_processed_articles": 437,
+      "percentage": 0.23,
+      "left_context_words": {
+        "l": 1
+      },
+      "right_context_words": {
+        "a": 1
+      }
+    },
+    "guerre en Ukraine": {
+      "articles_with_word": 6,
+      "total_processed_articles": 437,
+      "percentage": 1.37,
+      "left_context_words": {
+        "la": 9
+      },
+      "right_context_words": {
+        "les": 2,
+        "l’union": 1,
+        "face": 1,
+        "au": 1,
+        "il": 1,
+        "continue": 1,
+        "selon": 1,
+        "vladimir": 1
+      }
+    },
+    "Église orthodoxe russe": {
+      "articles_with_word": 0,
+      "total_processed_articles": 437,
+      "percentage": 0.0,
+      "left_context_words": {},
+      "right_context_words": {}
+    },
+    "Église indépendante ukrainienne": {
+      "articles_with_word": 0,
+      "total_processed_articles": 437,
+      "percentage": 0.0,
+      "left_context_words": {},
+      "right_context_words": {}
+    },
+    "ministère russe": {
+      "articles_with_word": 0,
+      "total_processed_articles": 437,
+      "percentage": 0.0,
+      "left_context_words": {},
+      "right_context_words": {}
+    },
+    "président russe": {
+      "articles_with_word": 3,
+      "total_processed_articles": 437,
+      "percentage": 0.69,
+      "left_context_words": {
+        "le": 2,
+        "du": 1
+      },
+      "right_context_words": {
+        "vladimir": 2,
+        "était": 1
+      }
+    }
+  }
+}

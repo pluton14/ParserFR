@@ -1,0 +1,63 @@
+{
+  "timestamp": "2025-10-22 14:30:00",
+  "search_period": {
+    "start_date": "2024-01-01",
+    "end_date": "2024-01-31"
+  },
+  "total_processed_articles": 3000,
+  "keywords": [
+    "exemple"
+  ],
+  "statistics": {
+    "exemple": {
+      "articles_with_word": 150,
+      "total_processed_articles": 3000,
+      "percentage": 5.0,
+      "left_context_words": {
+        "un": 45,
+        "le": 30,
+        "de": 25,
+        "pour": 20,
+        "dans": 18,
+        "à": 15,
+        "avec": 12,
+        "par": 10,
+        "sur": 8,
+        "en": 7,
+        "du": 6,
+        "ce": 5,
+        "cet": 4,
+        "au": 3,
+        "des": 2,
+        "une": 2,
+        "aux": 1,
+        "mon": 1,
+        "ton": 1,
+        "son": 1
+      },
+      "right_context_words": {
+        "de": 40,
+        "est": 35,
+        "pour": 28,
+        "dans": 22,
+        "que": 20,
+        "concret": 18,
+        "parfait": 15,
+        "typique": 12,
+        "simple": 10,
+        "classique": 9,
+        "rare": 8,
+        "unique": 7,
+        "notable": 6,
+        "frappant": 5,
+        "remarquable": 4,
+        "intéressant": 3,
+        "évident": 2,
+        "clair": 2,
+        "précis": 1,
+        "démonstratif": 1
+      }
+    }
+  }
+}
+
