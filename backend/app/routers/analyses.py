@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from ..core.exports import render_examples_html
 from ..db import get_db
-from ..models import Analysis, Dictionary, JobStatus, JobType
+from ..models import Analysis, Article, Dictionary, JobStatus, JobType
 from ..schemas import (
     AnalysisDetail,
     AnalysisRequest,
@@ -23,7 +23,7 @@ from ..schemas import (
     KeywordStats,
     clean_keywords,
 )
-from ..services.analysis import count_available_articles, run_analysis, unpack
+from ..services.analysis import ANALYSABLE, run_analysis, unpack
 from ..services.jobs import registry
 
 router = APIRouter(prefix="/api/analyses", tags=["analyses"])
@@ -78,10 +78,20 @@ def start_analysis(payload: AnalysisRequest, db: Session = Depends(get_db)) -> J
     if not keywords:
         raise HTTPException(status_code=400, detail="Не заданы ключевые слова")
 
-    with_text, _ = count_available_articles(
-        db, payload.start_date, payload.end_date, payload.categories
+    # Только «есть ли хоть одна статья»: полный COUNT за год на удалённой базе
+    # держит запрос минутами, а кнопка на странице всё это время «молчит».
+    # Точный подсчёт всё равно делает сам анализ уже в фоне.
+    exists_stmt = (
+        select(Article.id)
+        .where(
+            Article.published_date.between(payload.start_date, payload.end_date),
+            Article.status.in_(ANALYSABLE),
+        )
+        .limit(1)
     )
-    if with_text == 0:
+    if payload.categories:
+        exists_stmt = exists_stmt.where(Article.category.in_(payload.categories))
+    if db.execute(exists_stmt).first() is None:
         raise HTTPException(
             status_code=400,
             detail=(

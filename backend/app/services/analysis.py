@@ -32,7 +32,7 @@ from .jobs import JobHandle
 ANALYSABLE = (ArticleStatus.OK.value, ArticleStatus.TRUNCATED.value)
 
 # Сколько статей тянуть из базы за раз, чтобы не держать корпус в памяти целиком.
-CHUNK_SIZE = 500
+CHUNK_SIZE = 1000
 
 
 def count_available_articles(

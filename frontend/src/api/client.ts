@@ -92,6 +92,8 @@ export const api = {
   corpusSchedule: () => request<ScheduleInfo>("/api/corpus/schedule"),
   startHarvest: (data: { start_date: string; end_date: string; refresh?: boolean }) =>
     request<Job>("/api/corpus/harvest", { method: "POST", body: JSON.stringify(data) }),
+  corpusRange: () =>
+    request<{ first_day: string | null; last_day: string | null }>("/api/corpus/range"),
   corpusCategories: () => request<CategoryCount[]>("/api/corpus/categories"),
 
   // --- Анализ ---

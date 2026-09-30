@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date
 from pathlib import Path
 
@@ -18,6 +19,8 @@ from ..services.jobs import registry
 from ..services.scheduler import next_run_time
 
 router = APIRouter(prefix="/api/corpus", tags=["corpus"])
+
+DEMO_CATEGORIES_FILE = Path(__file__).resolve().parent.parent / "demo_categories.json"
 
 
 def _database_bytes() -> int:
@@ -63,6 +66,19 @@ def corpus_summary(db: Session = Depends(get_db)) -> CorpusSummary:
     )
 
 
+@router.get("/range")
+def corpus_range(db: Session = Depends(get_db)) -> dict:
+    """Первый и последний день корпуса — два обращения к индексу даты.
+
+    В отличие от /summary не считает ничего по всей таблице: на удалённой
+    базе (Turso) GROUP BY/COUNT по миллионам статей не укладывается в разумное
+    время, а странице анализа для дат по умолчанию нужны только границы.
+    """
+    first = db.execute(select(Article.published_date).order_by(Article.published_date.asc()).limit(1)).scalar()
+    last = db.execute(select(Article.published_date).order_by(Article.published_date.desc()).limit(1)).scalar()
+    return {"first_day": first, "last_day": last}
+
+
 @router.get("/coverage", response_model=list[DayCoverage])
 def corpus_coverage(
     start_date: date | None = Query(default=None),
@@ -81,6 +97,10 @@ def corpus_coverage(
 @router.get("/categories")
 def corpus_categories(db: Session = Depends(get_db)) -> list[dict]:
     """Категории статей с текстом — для мультивыбора фильтра в анализе."""
+    # Демо-снимок заморожен, а GROUP BY по всему корпусу на Turso слишком
+    # медленный — отдаём заранее посчитанный список.
+    if settings.readonly_demo and DEMO_CATEGORIES_FILE.is_file():
+        return json.loads(DEMO_CATEGORIES_FILE.read_text(encoding="utf-8"))
     rows = db.execute(
         select(Article.category, func.count())
         .where(Article.status.in_([ArticleStatus.OK.value, ArticleStatus.TRUNCATED.value]))

@@ -28,6 +28,7 @@ export default function AnalysesPage() {
   const [dictionaries, setDictionaries] = useState<Dictionary[]>([]);
   const [categories, setCategories] = useState<CategoryCount[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
   const [dictionaryId, setDictionaryId] = useState<number | "">("");
   const [corpusRange, setCorpusRange] = useState<{ first: string; last: string } | null>(null);
   const [startDate, setStartDate] = useState("");
@@ -60,7 +61,7 @@ export default function AnalysesPage() {
     // год, но только один раз — не переписываем даты, если пользователь
     // их уже поменял вручную.
     api
-      .corpusSummary()
+      .corpusRange()
       .then((s) => {
         if (!s.first_day || !s.last_day) return;
         setCorpusRange({ first: s.first_day, last: s.last_day });
@@ -109,6 +110,7 @@ export default function AnalysesPage() {
       setError("Выберите словарь");
       return;
     }
+    setStarting(true);
     try {
       const j = await api.startAnalysis({
         start_date: startDate,
@@ -122,6 +124,8 @@ export default function AnalysesPage() {
       setError(null);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Не удалось запустить анализ");
+    } finally {
+      setStarting(false);
     }
   };
 
@@ -269,8 +273,8 @@ export default function AnalysesPage() {
         {dictionaries.length === 0 ? (
           <p className="muted">Сначала создайте словарь на вкладке «Словари».</p>
         ) : (
-          <button onClick={start} disabled={job?.status === "running"}>
-            Запустить анализ
+          <button onClick={start} disabled={starting || job?.status === "running"}>
+            {starting ? "Запускаем…" : "Запустить анализ"}
           </button>
         )}
         {jobId && <JobProgress jobId={jobId} />}
