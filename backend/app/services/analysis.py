@@ -16,7 +16,7 @@ from dataclasses import asdict
 from datetime import date, datetime
 
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from ..config import settings
 from ..core.statistics import WordStatistics, build_keyword_plans, scan_article
@@ -217,6 +217,9 @@ def run_analysis(
                 )
                 .order_by(Article.published_date, Article.id)
                 .limit(CHUNK_SIZE)
+                # Полный текст (text_gz) анализу не нужен — только токены и
+                # заголовок. По сети с Turso он удваивал объём каждой пачки.
+                .options(defer(Article.text_gz))
             )
             if categories:
                 stmt = stmt.where(Article.category.in_(categories))

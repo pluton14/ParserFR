@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import queue
 from datetime import datetime
@@ -26,6 +27,7 @@ router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 # Пустой комментарий раз в N секунд: держит соединение живым, когда
 # сбор долго молчит, и не даёт прокси закрыть его по таймауту.
 HEARTBEAT_SECONDS = 15
+STREAM_POLL_SECONDS = 0.25
 
 
 def _row_to_out(row: Job) -> JobOut:
@@ -109,15 +111,25 @@ async def stream_job(job_id: str, request: Request) -> StreamingResponse:
     subscription = job.subscribe()
 
     async def event_source():
+        # Ждём событие без блокировки: queue.Queue.get(timeout=...) прямо в
+        # async-генераторе замораживал весь цикл событий сервера на время
+        # ожидания (до HEARTBEAT_SECONDS на каждого подписчика), и все
+        # остальные запросы стояли, пока открыта страница с прогрессом.
+        waited = 0.0
         try:
             while True:
                 if await request.is_disconnected():
                     break
                 try:
-                    item = subscription.get(timeout=HEARTBEAT_SECONDS)
+                    item = subscription.get_nowait()
                 except queue.Empty:
-                    yield ": keep-alive\n\n"
+                    await asyncio.sleep(STREAM_POLL_SECONDS)
+                    waited += STREAM_POLL_SECONDS
+                    if waited >= HEARTBEAT_SECONDS:
+                        waited = 0.0
+                        yield ": keep-alive\n\n"
                     continue
+                waited = 0.0
 
                 if item["event"] == "close":
                     break
