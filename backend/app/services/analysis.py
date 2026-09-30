@@ -15,7 +15,7 @@ import zlib
 from dataclasses import asdict
 from datetime import date, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..config import settings
@@ -196,20 +196,26 @@ def run_analysis(
     example_limit = settings.example_limit_per_keyword
     processed = 0
     last_id = 0
+    cursor_date = start
 
     while True:
         if job.is_cancelled():
             return
 
         with session_scope() as db:
+            # Пагинация по (дата, id), а не по одному id: при order by id SQLite
+            # на каждой пачке заново сортирует ВСЕ статьи периода (временное
+            # B-дерево), и время растёт квадратично — на удалённой базе это
+            # часы и миллионы прочитанных строк. По дате идём прямо по индексу.
             stmt = (
                 select(Article)
                 .where(
-                    Article.published_date.between(start, end),
+                    Article.published_date >= cursor_date,
+                    Article.published_date <= end,
                     Article.status.in_(ANALYSABLE),
-                    Article.id > last_id,
+                    or_(Article.published_date > cursor_date, Article.id > last_id),
                 )
-                .order_by(Article.id)
+                .order_by(Article.published_date, Article.id)
                 .limit(CHUNK_SIZE)
             )
             if categories:
@@ -220,6 +226,7 @@ def run_analysis(
                 break
 
             for article in rows:
+                cursor_date = article.published_date
                 last_id = article.id
                 words = _article_words(article, text_scope)
                 if not words:

@@ -68,14 +68,18 @@ def corpus_summary(db: Session = Depends(get_db)) -> CorpusSummary:
 
 @router.get("/range")
 def corpus_range(db: Session = Depends(get_db)) -> dict:
-    """Первый и последний день корпуса — два обращения к индексу даты.
+    """Первый и последний день, за которые реально есть статьи с текстом.
 
-    В отличие от /summary не считает ничего по всей таблице: на удалённой
-    базе (Turso) GROUP BY/COUNT по миллионам статей не укладывается в разумное
-    время, а странице анализа для дат по умолчанию нужны только границы.
+    Берём из harvested_days (по одной строке на день, ~8 тысяч), а не из
+    articles: там на удалённой базе (Turso) любой проход по миллионам строк
+    занимает минуты, а хвост таблицы — это URL без текста (ещё не скачаны),
+    так что MAX(published_date) показал бы даты, за которые анализировать нечего.
     """
-    first = db.execute(select(Article.published_date).order_by(Article.published_date.asc()).limit(1)).scalar()
-    last = db.execute(select(Article.published_date).order_by(Article.published_date.desc()).limit(1)).scalar()
+    first, last = db.execute(
+        select(func.min(HarvestedDay.day), func.max(HarvestedDay.day)).where(
+            HarvestedDay.ok_count + HarvestedDay.truncated_count > 0
+        )
+    ).one()
     return {"first_day": first, "last_day": last}
 
 
