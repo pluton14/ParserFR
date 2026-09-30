@@ -3,63 +3,7 @@
 > vite
 
 
-  [32m[1mVITE[22m v4.5.14[39m  [2mready in [0m[1m874[22m[2m[0m ms[22m
+  [32m[1mVITE[22m v4.5.14[39m  [2mready in [0m[1m568[22m[2m[0m ms[22m
 
   [32m➜[39m  [1mLocal[22m:   [36mhttp://127.0.0.1:[1m5173[22m/[39m
 [2m  [32m➜[39m  [1mNetwork[22m[2m: use [22m[1m--host[22m[2m to expose[22m
-[2m10:44:29[22m [31m[1m[vite][22m[39m [31mhttp proxy error at /api/jobs/c4ec388b-d624-42df-860f-8f327158d6b0/stream:[39m
-Error: read ECONNRESET
-    at TCP.onStreamRead (node:internal/stream_base_commons:217:20)
-[2m10:44:29[22m [31m[1m[vite][22m[39m [31mhttp proxy error at /api/jobs/c4ec388b-d624-42df-860f-8f327158d6b0/stream:[39m
-Error: read ECONNRESET
-    at TCP.onStreamRead (node:internal/stream_base_commons:217:20)
-[2m10:58:06[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/DictionariesPage.tsx, /src/pages/AnalysisDetailPage.tsx, /src/pages/CorpusPage.tsx, /src/pages/AnalysesPage.tsx, /src/components/JobProgress.tsx, /src/components/ExamplesPanel.tsx[22m
-[2m10:58:18[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/DictionariesPage.tsx, /src/pages/AnalysisDetailPage.tsx, /src/pages/CorpusPage.tsx, /src/pages/AnalysesPage.tsx, /src/components/JobProgress.tsx, /src/components/ExamplesPanel.tsx[22m
-[2m10:58:38[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/AnalysesPage.tsx[22m
-[2m10:58:45[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/AnalysesPage.tsx[22m
-[2m10:58:57[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/AnalysesPage.tsx[22m
-[2m10:59:18[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/styles.css[22m
-[2m10:59:35[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/AnalysesPage.tsx[22m
-[2m11:00:35[22m [31m[1m[vite][22m[39m [31mhttp proxy error at /api/jobs/f22a938a-7532-4adb-ae2e-9ef88162ea24/stream:[39m
-Error: read ECONNRESET
-    at TCP.onStreamRead (node:internal/stream_base_commons:217:20)
-[2m11:00:35[22m [31m[1m[vite][22m[39m [31mhttp proxy error at /api/jobs/f22a938a-7532-4adb-ae2e-9ef88162ea24/stream:[39m
-Error: read ECONNRESET
-    at TCP.onStreamRead (node:internal/stream_base_commons:217:20)
-[2m11:40:21[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/AnalysesPage.tsx[22m
-[2m11:41:22[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/AnalysesPage.tsx[22m
-[2m11:41:31[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/AnalysesPage.tsx[22m
-[2m11:41:42[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/styles.css[22m
-[2m11:42:13[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/TimeseriesChart.tsx[22m
-[2m11:42:49[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/AnalysisDetailPage.tsx[22m
-[2m11:43:02[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/AnalysisDetailPage.tsx[22m
-[2m11:43:10[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/AnalysisDetailPage.tsx[22m
-[2m11:43:22[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/AnalysisDetailPage.tsx[22m
-[2m11:44:17[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/AnalysesPage.tsx[22m
-[2m11:44:25[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/AnalysesPage.tsx[22m
-[2m11:44:32[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/AnalysesPage.tsx[22m
-[2m11:44:46[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/AnalysesPage.tsx[22m
-[2m11:44:57[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/AnalysesPage.tsx[22m
-[2m11:45:03[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/AnalysesPage.tsx[22m
-[2m16:20:28[22m [31m[1m[vite][22m[39m [31mhttp proxy error at /api/corpus/categories:[39m
-Error: read ECONNRESET
-    at TCP.onStreamRead (node:internal/stream_base_commons:217:20)
-[2m16:20:28[22m [31m[1m[vite][22m[39m [31mhttp proxy error at /api/corpus/categories:[39m
-Error: read ECONNRESET
-    at TCP.onStreamRead (node:internal/stream_base_commons:217:20)
-[2m16:20:31[22m [31m[1m[vite][22m[39m [31mhttp proxy error at /api/analyses:[39m
-Error: connect ECONNREFUSED 127.0.0.1:8000
-    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1278:16)
-[2m16:30:08[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/CorpusPage.tsx[22m
-[2m16:30:20[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/CorpusPage.tsx[22m
-[2m16:30:29[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/CorpusPage.tsx[22m
-[2m16:30:48[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/CorpusPage.tsx[22m
-[2m16:31:34[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/TimeseriesChart.tsx[22m
-[2m16:32:02[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/AnalysisDetailPage.tsx[22m
-[2m16:32:14[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/AnalysisDetailPage.tsx[22m
-[2m16:32:32[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/AnalysisDetailPage.tsx[22m
-[2m16:32:41[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/AnalysisDetailPage.tsx[22m
-[2m16:38:48[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/TimeseriesChart.tsx[22m
-[2m16:38:55[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/TimeseriesChart.tsx[22m
-[2m10:22:46[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/App.tsx[22m
-[2m11:04:16[22m [36m[1m[vite][22m[39m [32mpage reload [39m[2mdist/index.html[22m
