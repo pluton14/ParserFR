@@ -17,6 +17,7 @@ from contextlib import contextmanager
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import QueuePool
 
 from .config import settings
 
@@ -39,6 +40,16 @@ if _USING_TURSO:
     engine = create_engine(
         f"sqlite+libsql://{_host}?secure=true",
         connect_args={"auth_token": settings.turso_auth_token},
+        # Без явного пула SQLAlchemy берёт для удалённого URL (без пути к файлу)
+        # SingletonThreadPool на 5 соединений: при большем числе потоков он
+        # закрывает соединения, которые соседние запросы ещё используют, и
+        # rollback на закрытом соединении роняет драйвер Rust-паникой
+        # (Option::unwrap on None, lib.rs:260).
+        poolclass=QueuePool,
+        pool_size=5,
+        max_overflow=10,
+        # Turso сам закрывает простаивающие потоки — не держим соединения долго.
+        pool_recycle=240,
         pool_pre_ping=True,
         future=True,
     )
