@@ -18,4 +18,8 @@ cd ..
 echo "== Запуск бэкенда =="
 cd backend
 pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port "${PORT:-8000}"
+# Находка 2026-09-30: Replit подставляет $PORT=5000 в окружение, но
+# healthcheck самого Autoscale-деплоя жёстко ждёт порт 8000 (значение
+# .replit при ПЕРВОЙ публикации, не обновляется при последующих —
+# правка .replit на 5000 эффекта не дала). Слушаем строго 8000.
+uvicorn app.main:app --host 0.0.0.0 --port 8000
