@@ -27,6 +27,15 @@ if _USING_TURSO:
     # схемы (turso даёт его как "libsql://xxx.turso.io" — при копировании
     # схему на всякий случай срезаем, чтобы не задваивалась).
     _host = settings.turso_database_url.removeprefix("libsql://").removeprefix("https://")
+
+    # У libsql_experimental нет DB-API-атрибута Binary (у sqlite3 он есть), а
+    # SQLAlchemy берёт его для любого LargeBinary-параметра — без этого падает
+    # запись результатов анализа (сжатые блобы). Блоб драйвер принимает как bytes.
+    import libsql_experimental
+
+    if not hasattr(libsql_experimental, "Binary"):
+        libsql_experimental.Binary = bytes
+
     engine = create_engine(
         f"sqlite+libsql://{_host}?secure=true",
         connect_args={"auth_token": settings.turso_auth_token},
