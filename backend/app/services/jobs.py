@@ -18,7 +18,7 @@ from datetime import datetime
 from typing import Any, Callable
 
 from ..db import session_scope
-from ..models import Job, JobLog, JobStatus
+from ..models import Analysis, Job, JobLog, JobStatus
 
 logger = logging.getLogger("parserfr.jobs")
 
@@ -248,3 +248,10 @@ def recover_stale_jobs() -> None:
             row.status = JobStatus.FAILED.value
             row.error = "Сервер был перезапущен во время выполнения задачи"
             row.finished_at = datetime.utcnow()
+
+        # Записи анализов в истории иначе остаются «running» навсегда: их
+        # статус меняет только сам анализ, а он оборвался вместе с сервером.
+        for analysis in db.query(Analysis).filter(Analysis.status == JobStatus.RUNNING.value).all():
+            analysis.status = JobStatus.FAILED.value
+            analysis.error = "Сервер был перезапущен во время выполнения анализа"
+            analysis.finished_at = datetime.utcnow()

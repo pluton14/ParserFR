@@ -23,7 +23,7 @@ from ..schemas import (
     KeywordStats,
     clean_keywords,
 )
-from ..services.analysis import ANALYSABLE, unpack
+from ..services.analysis import ANALYSABLE, mark_analysis_unfinished, unpack
 from ..services.analysis_process import run_analysis_in_process
 from ..services.jobs import registry
 
@@ -130,15 +130,13 @@ def start_analysis(payload: AnalysisRequest, db: Session = Depends(get_db)) -> J
         except Exception as exc:
             # Помечаем сам анализ упавшим, иначе он навсегда останется "running"
             # в списке истории, хотя задача уже завершилась.
-            from ..db import session_scope
-
-            with session_scope() as session:
-                failed = session.get(Analysis, analysis_id)
-                if failed is not None:
-                    failed.status = JobStatus.FAILED.value
-                    failed.error = str(exc)
-                    failed.finished_at = datetime.utcnow()
+            mark_analysis_unfinished(analysis_id, JobStatus.FAILED.value, str(exc))
             raise
+
+        # Остановка пользователем: run_analysis просто возвращается, не доделав
+        # запись, — без этой отметки анализ тоже навсегда остался бы «running».
+        if handle.is_cancelled():
+            mark_analysis_unfinished(analysis_id, JobStatus.CANCELLED.value)
 
     job = registry.submit(
         JobType.ANALYSIS.value,

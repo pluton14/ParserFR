@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import time
 import zlib
 from dataclasses import asdict
 from datetime import date, datetime
@@ -22,7 +23,7 @@ from ..config import settings
 from ..core.statistics import WordStatistics, build_keyword_plans, scan_article
 from ..core.tokenizer import tokenize_french_text
 from ..db import session_scope
-from ..models import Analysis, Article, ArticleStatus, JobStatus
+from ..models import Analysis, Article, ArticleStatus, HarvestedDay, JobStatus
 from .jobs import JobHandle
 
 # Что попадает в анализ. Обрезанные платные статьи включены сознательно:
@@ -54,6 +55,36 @@ def count_available_articles(
     total = db.execute(total_stmt).scalar_one()
 
     return with_text, total
+
+
+def estimate_articles_with_text(db: Session, start: date, end: date) -> int:
+    """Оценка числа статей с текстом по таблице покрытия дней (одна строка на день).
+
+    Точный COUNT по статьям на удалённой базе (Turso) за несколько лет идёт
+    минуты и откладывает старт анализа, а число нужно только полоске прогресса.
+    Итоговые числа в результате считаются точно — по реально просмотренным статьям.
+    """
+    return db.execute(
+        select(func.coalesce(func.sum(HarvestedDay.ok_count + HarvestedDay.truncated_count), 0))
+        .where(HarvestedDay.day.between(start, end))
+    ).scalar_one()
+
+
+def count_total_articles(db: Session, start: date, end: date) -> int:
+    """Все статьи корпуса за период, независимо от статуса."""
+    return db.execute(
+        select(func.count()).select_from(Article).where(Article.published_date.between(start, end))
+    ).scalar_one()
+
+
+def mark_analysis_unfinished(analysis_id: int, status: str, error: str | None = None) -> None:
+    """Переводит анализ из «running» в failed/cancelled, если он всё ещё висит выполняющимся."""
+    with session_scope() as db:
+        row = db.get(Analysis, analysis_id)
+        if row is not None and row.status == JobStatus.RUNNING.value:
+            row.status = status
+            row.error = error
+            row.finished_at = datetime.utcnow()
 
 
 def _article_words(article: Article, text_scope: str) -> list[str]:
@@ -180,28 +211,42 @@ def run_analysis(
     job.log(f"Анализ за {start} — {end}, ключевых слов: {len(plans)}, зона: {scope_label}{categories_label}")
     job.set_progress(stage="counting", message="Считаем объём корпуса…")
 
+    # Без фильтра категорий объём для полоски прогресса берём из таблицы покрытия
+    # дней — мгновенно. С фильтром такой таблицы нет, считаем точно, как раньше.
+    total_in_corpus: int | None = None
     with session_scope() as db:
-        with_text, total_in_corpus = count_available_articles(db, start, end, categories)
+        if categories:
+            expected, total_in_corpus = count_available_articles(db, start, end, categories)
+        else:
+            expected = estimate_articles_with_text(db, start, end)
+            if expected == 0:
+                expected, total_in_corpus = count_available_articles(db, start, end, categories)
 
-    if with_text == 0:
+    if expected == 0:
         raise ValueError(
             "За этот период в корпусе нет статей с текстом. "
             "Сначала соберите корпус на вкладке «Корпус»."
         )
 
-    job.log(f"Статей с текстом: {with_text} (всего в корпусе за период: {total_in_corpus})")
-    job.set_progress(stage="scanning", current=0, total=with_text,
+    approx = "" if total_in_corpus is not None else "≈"
+    job.log(f"Статей с текстом: {approx}{expected}")
+    job.set_progress(stage="scanning", current=0, total=expected,
                      message="Сканируем статьи…")
 
     example_limit = settings.example_limit_per_keyword
+    seen = 0  # все просмотренные статьи — именно по ним считаются проценты
     processed = 0
     last_id = 0
     cursor_date = start
+
+    chunk_number = 0
+    fetch_total = scan_total = 0.0
 
     while True:
         if job.is_cancelled():
             return
 
+        fetch_started = time.perf_counter()
         with session_scope() as db:
             # Пагинация по (дата, id), а не по одному id: при order by id SQLite
             # на каждой пачке заново сортирует ВСЕ статьи периода (временное
@@ -224,13 +269,16 @@ def run_analysis(
             if categories:
                 stmt = stmt.where(Article.category.in_(categories))
             rows = db.execute(stmt).scalars().all()
+            fetch_total += time.perf_counter() - fetch_started
 
             if not rows:
                 break
 
+            scan_started = time.perf_counter()
             for article in rows:
                 cursor_date = article.published_date
                 last_id = article.id
+                seen += 1
                 words = _article_words(article, text_scope)
                 if not words:
                     continue
@@ -250,7 +298,30 @@ def run_analysis(
 
                 processed += 1
 
-        job.set_progress(current=processed, message=f"Обработано {processed}/{with_text}")
+            scan_total += time.perf_counter() - scan_started
+
+        # Раздельный замер чтения и подсчёта — чтобы при медленном прогоне было
+        # видно, куда уходит время (база или процессор), а не гадать.
+        chunk_number += 1
+        if chunk_number % 20 == 0:
+            job.log(
+                f"Пачек: {chunk_number}, просмотрено {seen}; за последние 20 пачек: "
+                f"чтение {fetch_total:.1f} с, подсчёт {scan_total:.1f} с"
+            )
+            fetch_total = scan_total = 0.0
+
+        job.set_progress(
+            current=seen,
+            total=max(expected, seen),
+            message=f"Обработано {seen}/{approx}{max(expected, seen)}",
+        )
+
+    with_text = seen
+
+    if total_in_corpus is None:
+        job.set_progress(stage="counting", message="Считаем статьи за период…")
+        with session_scope() as db:
+            total_in_corpus = count_total_articles(db, start, end)
 
     statistics_payload = _build_statistics_payload(
         stats, ordered_keywords, start, end, with_text
@@ -279,5 +350,6 @@ def run_analysis(
     job.result_id = analysis_id
     total_found = sum(stats[k].articles_with_word for k in ordered_keywords)
     job.log(f"Готово. Статей с попаданиями: {total_found}.")
-    job.set_progress(stage="done", current=processed, total=with_text,
+    job.log(f"Просмотрено статей: {with_text} (всего в корпусе за период: {total_in_corpus})")
+    job.set_progress(stage="done", current=with_text, total=with_text,
                      message="Анализ завершён")
