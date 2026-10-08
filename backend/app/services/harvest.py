@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import random
 import threading
 import time
 from datetime import date, datetime
@@ -23,6 +24,7 @@ from sqlalchemy import func, select
 from ..config import settings
 from ..core.figaro import (
     FetchedArticle,
+    GonePage,
     PremiumArticle,
     browser_headers,
     fetch_article,
@@ -33,6 +35,7 @@ from ..core.tokenizer import tokenize_french_text
 from ..db import session_scope
 from ..models import Article, ArticleStatus, DayStatus, HarvestedDay
 from .jobs import JobHandle
+from .pacing import pacing
 
 # Как часто сбрасывать накопленные статьи в базу.
 FLUSH_EVERY = 50
@@ -52,11 +55,206 @@ def _build_session() -> requests.Session:
     """
     session = requests.Session()
     session.headers.update(browser_headers())
-    pool_size = max(settings.harvest_workers, 10) + 4
+    pool_size = max(pacing.workers, 10) + 4
     adapter = HTTPAdapter(pool_connections=pool_size, pool_maxsize=pool_size)
     session.mount("https://", adapter)
     session.mount("http://", adapter)
     return session
+
+
+class SharedSession:
+    """Одна requests.Session на все потоки, пересоздаваемая раз в REFRESH_EVERY запросов.
+
+    Раньше сессия создавалась заново на каждый день (находка 2026-09-25: сессия,
+    живущая часами, копит полумёртвые соединения). Теперь дней-барьеров нет, а
+    пересоздание по счётчику сохраняет то же свойство — пул остаётся «свежим» —
+    и не платит новым TLS-рукопожатием на каждый день из нескольких тысяч.
+    """
+
+    REFRESH_EVERY = 4000
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._session = _build_session()
+        self._uses = 0
+
+    def get(self) -> requests.Session:
+        with self._lock:
+            self._uses += 1
+            if self._uses > self.REFRESH_EVERY:
+                self._session = _build_session()
+                self._uses = 0
+            return self._session
+
+
+class RotatingSession:
+    """Сессия requests, которую можно принудительно пересобрать на лету.
+
+    По просьбе пользователя 2026-10-06: при каждой блокировке 403/429 сессия
+    (TCP/TLS-соединение + cookies) сбрасывается — вдруг источник держит часть
+    бана на уровне соединения/cookie, а не только по IP. Несколько потоков
+    могут словить блок почти одновременно и вызвать reset() несколько раз
+    подряд — не страшно, просто лишняя пересборка, а не ошибка.
+
+    Важно не питать иллюзий: если блок действительно по IP (а это сейчас
+    похоже на так — смена IP не помогла), пересборка сессии НЕ меняет IP и
+    саму блокировку не снимет. Это лишь убирает один конкретный вектор
+    (залипшее соединение/cookie), который теоретически мог быть причиной.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._session = _build_session()
+
+    def get(self) -> requests.Session:
+        with self._lock:
+            return self._session
+
+    def reset(self) -> None:
+        with self._lock:
+            try:
+                self._session.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._session = _build_session()
+
+
+class StoppedForRepeatedBlocks(Exception):
+    """Источник банит нас несколько раз подряд даже на фиксированном темпе — сбор сам себя останавливает."""
+
+
+class RateGate:
+    """Потолок темпа запросов к источнику и реакция на блокировку (403/429).
+
+    Откат 2026-10-06 к технике сбора 30 сентября: по умолчанию потолка нет
+    (pacing.rate = 0) — темп задаётся только числом потоков, как тогда. Потолок
+    можно выставить из интерфейса (запросов/с, равномерно), он действует сразу.
+
+    Находка 2026-10-06: пауза 5→10→20…мин после 403/429 заменена на
+    короткую случайную (BLOCK_PAUSE_MIN..MAX секунд). Полное снятие паузы
+    (пробовали по просьбе пользователя) оказалось ХУЖЕ ручного перезапуска
+    сервера — хотя пересборка сессии (RotatingSession.reset(), см. вызывающий
+    код) даёт то же самое, что и новый процесс: новое TCP/TLS-соединение,
+    пустые cookies. Разница в том, что пока человек останавливает процесс и
+    набирает команду заново, естественно проходит секунд 10-60 — если
+    источник банит по скользящему окну, мгновенный повтор бьёт в то же самое
+    окно, пока оно ещё «горячее», а задержка даёт ему остыть. Если блокировка
+    повторяется STOP_AFTER_BLOCKS раз подряд без устойчивой серии успехов
+    между ними, сбор останавливает себя сам (StoppedForRepeatedBlocks) —
+    решение о продолжении принимает человек.
+    """
+
+    STOP_AFTER_BLOCKS = 4
+    BLOCK_PAUSE_MIN = 15.0
+    BLOCK_PAUSE_MAX = 45.0
+    # Находка 2026-10-05: ОДИН случайный успех (например, запрос, ушедший в сеть
+    # за миг до блокировки и ответивший раньше неё) сбрасывал счётчик банов
+    # до нуля — автостоп после STOP_AFTER_BLOCKS никогда не наступал, и сбор
+    # часами полз на 1 бан / 1 случайный успех за раз вместо того, чтобы
+    # остановиться. Теперь счётчик банов сбрасывает только устойчивая серия
+    # успехов, а не единичное везение.
+    SUCCESSES_TO_RECOVER = 30
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.reset()
+
+    def reset(self) -> None:
+        with self._lock:
+            self._next_slot = 0.0
+            self._blocked_until = 0.0
+            self._backoff = float(settings.block_backoff_seconds)
+            self._consecutive_blocks = 0
+            self._success_streak = 0
+
+    @property
+    def rate(self) -> float:
+        return pacing.rate
+
+    @property
+    def enabled(self) -> bool:
+        """Включён ли потолок темпа. Пауза при блокировке действует всегда."""
+        return pacing.rate > 0
+
+    def wait_turn(self, job: JobHandle) -> bool:
+        """Блокирует до своей очереди. False — задачу остановили, запрос делать не надо."""
+        while True:
+            if job.is_cancelled():
+                return False
+            with self._lock:
+                now = time.monotonic()
+                if now < self._blocked_until:
+                    # Короткими интервалами — чтобы «Повторить сейчас» и отмена
+                    # подхватывались за пару секунд, а не после всей паузы.
+                    delay = min(self._blocked_until - now, 2.0)
+                    slot = None
+                else:
+                    rate = pacing.rate
+                    if rate <= 0:
+                        return True
+                    slot = max(now, self._next_slot)
+                    self._next_slot = slot + 1.0 / rate
+                    delay = slot - now
+            if slot is None:
+                job.cancel_event.wait(timeout=delay)
+                continue
+            if delay > 0:
+                job.cancel_event.wait(timeout=delay)
+            return not job.is_cancelled()
+
+    def skip_pause(self) -> None:
+        """Досрочно снимает текущую паузу, не трогая счётчик банов и не меняя темп.
+
+        Для ручной кнопки «Повторить сейчас»: потоки спят короткими интервалами
+        (≤2 с, см. wait_turn) именно для того, чтобы такой сброс подхватился
+        быстро, а не только на следующей итерации цикла после долгого сна.
+        """
+        with self._lock:
+            self._blocked_until = 0.0
+
+    def on_success(self) -> None:
+        with self._lock:
+            # Устойчивая серия успехов подряд (не единичный) снимает счётчик
+            # блокировок и возвращает паузу к минимуму — временный бан не должен
+            # влиять на поведение часы спустя после того, как источник его снял.
+            self._success_streak += 1
+            if self._success_streak >= self.SUCCESSES_TO_RECOVER:
+                self._consecutive_blocks = 0
+                self._backoff = float(settings.block_backoff_seconds)
+
+    def on_block(self, job: JobHandle) -> None:
+        with self._lock:
+            now = time.monotonic()
+            if now < self._blocked_until:
+                return  # тот же блок, уже засчитанный другим потоком секунду назад
+            self._success_streak = 0
+            self._consecutive_blocks += 1
+            stop = self._consecutive_blocks >= self.STOP_AFTER_BLOCKS
+            pause = random.uniform(self.BLOCK_PAUSE_MIN, self.BLOCK_PAUSE_MAX)
+            self._blocked_until = now + pause
+            count = self._consecutive_blocks
+        if stop:
+            job.log(
+                f"Источник заблокировал нас {count}-й раз подряд при "
+                f"{_rate_label()} — сбор останавливается. "
+                f"Нужно дождаться снятия блокировки и запустить заново вручную.",
+                level="error",
+            )
+            job.cancel_event.set()
+            raise StoppedForRepeatedBlocks()
+        job.log(
+            f"Источник ответил 403/429 — блокировка ({count}-й раз подряд). "
+            f"Пауза {pause:.0f} с (новая сессия), темп после неё — прежний ({_rate_label()}).",
+            level="warning",
+        )
+
+
+def _rate_label() -> str:
+    rate = pacing.rate
+    return "без потолка темпа" if rate <= 0 else f"потолке {rate:g} запр/с"
+
+
+gate = RateGate()
 
 
 class ErrorBudget:
@@ -89,17 +287,29 @@ class ErrorBudget:
 
 def _fetch_with_retries(
     url: str,
-    session: requests.Session,
+    session_box: RotatingSession,
     budget: ErrorBudget,
     job: JobHandle,
+    day_abort: threading.Event,
 ) -> tuple[str, FetchedArticle | None, str]:
-    """Возвращает (url, статья или None, статус)."""
-    for _ in range(settings.max_retries):
-        if job.is_cancelled():
+    """Возвращает (url, статья или None, статус).
+
+    По просьбе пользователя 2026-10-06: на блокировке больше не сидим и не
+    повторяем попытки для ТОЙ ЖЕ даты — ставим day_abort и сразу уступаем
+    статью как pending. _run_download_loop увидит флаг, отменит остальные
+    ещё не начатые статьи этого дня и перейдёт к следующей (случайной) дате
+    из пула; эта дата останется partial и подхватится позже.
+    """
+    attempts = 0
+    while attempts < settings.max_retries:
+        if day_abort.is_set():
+            return url, None, ArticleStatus.PENDING.value
+        if not gate.wait_turn(job):
             return url, None, ArticleStatus.FAILED.value
         try:
-            article = fetch_article(url, session=session)
+            article = fetch_article(url, session=session_box.get())
             budget.record_success()
+            gate.on_success()
             if not article.text.strip():
                 status = ArticleStatus.EMPTY.value
             elif article.truncated:
@@ -110,8 +320,28 @@ def _fetch_with_retries(
         except PremiumArticle:
             # Платная статья: у источника нет для нас текста, повторы бессмысленны.
             budget.record_success()
+            gate.on_success()
             return url, None, ArticleStatus.PREMIUM.value
+        except GonePage:
+            # 404/410: страницы у источника нет. Это не сбой — терминальный исход.
+            budget.record_success()
+            gate.on_success()
+            return url, None, ArticleStatus.EMPTY.value
+        except requests.exceptions.HTTPError as exc:
+            status_code = exc.response.status_code if exc.response is not None else None
+            if status_code in (403, 429):
+                # Блокировка, а не ошибка статьи. Находка 2026-10-06: сразу
+                # уступаем день (day_abort) вместо повтора той же даты —
+                # и новую сессию для следующего (session_box.reset()).
+                session_box.reset()
+                gate.on_block(job)
+                day_abort.set()
+                return url, None, ArticleStatus.PENDING.value
+            attempts += 1
+            budget.record_error()
+            time.sleep(settings.retry_delay)
         except requests.exceptions.RequestException:
+            attempts += 1
             budget.record_error()
             time.sleep(settings.retry_delay)
         except Exception as exc:  # noqa: BLE001
@@ -277,6 +507,7 @@ def _persist_batch(batch: list[tuple[str, FetchedArticle | None, str, date]]) ->
                 article.title = fetched.title
                 article.category = fetched.category
                 article.set_content(fetched.text, tokenize_french_text(fetched.text))
+                article.set_captions(fetched.captions)
 
 
 def _count_by_status(day: date) -> dict[str, int]:
@@ -333,11 +564,145 @@ def _known_sitemaps_from_db(start: date, end: date) -> list[tuple[date, str]]:
     return sorted(((day, url) for day, url in rows), key=lambda item: item[0])
 
 
+def _run_download_loop(
+    job: JobHandle,
+    per_day: list[tuple[date, str, list[str], bool]],
+    pending_total: int,
+    refresh: bool,
+) -> int:
+    """Общий цикл скачивания статей по готовому списку (день, карта, URL, листинг ок).
+
+    Переиспользуется и обычным сбором (per_day строится из листинга карт), и
+    "скачиванием уже известного" (per_day строится прямо из базы, без единого
+    запроса к sitemaps.lefigaro.fr — см. run_download_pending).
+
+    Находка 2026-10-05: gate.reset() здесь раньше стирал счётчик банов и
+    бэкофф, накопленные ЛИСТИНГОМ (который теперь тоже уважает gate) — вызов
+    этой функции сразу после листинга начинал скачивание как будто источник
+    только что не банил нас вовсе. reset() вызывают сами точки входа
+    (run_harvest — один раз в начале, до листинга; run_download_pending —
+    в начале, листинга у неё нет) — здесь он не нужен.
+    """
+    budget = ErrorBudget(job)
+    processed = 0
+    batch: list[tuple[str, FetchedArticle | None, str, date]] = []
+    last_rate_log = time.monotonic()
+    rate_log_base = 0
+
+    # Откат 2026-10-05 по просьбе пользователя: вернули барьер по дням (как до
+    # находки 2026-10-01) — все потоки дорабатывают текущий день, прежде чем
+    # взяться за следующий, с новой сессией на каждый день. Общий пул без
+    # барьера давал ровный безостановочный поток запросов; версия с барьером
+    # естественно ограничивала темп самой своей архитектурой (накладные
+    # расходы на день) и неделями работала без банов источника, в отличие от
+    # версии без барьера. RateGate (пауза и автостоп при 403/429 — находки
+    # 2026-10-01/02/05) оставлен как есть и продолжает действовать внутри
+    # _fetch_with_retries — это сетевой уровень, барьера не касается.
+    # По просьбе пользователя 2026-10-06: порядок дней — случайный, а не
+    # хронологический. per_day копируется, чтобы не менять список вызывающего.
+    per_day = list(per_day)
+    random.shuffle(per_day)
+
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=pacing.workers
+    ) as executor:
+        for day, xml_url, urls, listing_ok in per_day:
+            if job.is_cancelled():
+                break
+
+            if not listing_ok:
+                # Карта не прочиталась — для дня нет надёжного списка статей,
+                # done ставить нельзя. Оставляем failed, следующий запуск перечитает.
+                _update_day_stats(day, xml_url, len(urls), DayStatus.FAILED.value)
+                continue
+
+            # Проверка known по одному дню (не по всему периоду разом) — см.
+            # находку 2026-09-28 про массовое недосчитывание known.
+            known_for_day = set() if refresh else _existing_urls(urls)
+            todo = [url for url in urls if url not in known_for_day]
+            if not todo:
+                _update_day_stats(day, xml_url, len(urls), DayStatus.DONE.value)
+                continue
+
+            _update_day_stats(day, xml_url, len(urls), DayStatus.RUNNING.value)
+            job.log(f"{day}: скачиваем {len(todo)} статей")
+
+            # Свежая сессия на каждый день — находка 2026-09-25: сессия, живущая
+            # часами, копит соединения, которые удалённая сторона уже закрыла.
+            # RotatingSession вместо голой requests.Session — находка 2026-10-06:
+            # теперь сессию внутри дня можно сбросить и на КАЖДУЮ блокировку
+            # 403/429, не только раз в день (см. _fetch_with_retries).
+            session_box = RotatingSession()
+            # Находка 2026-10-06: свой флаг на каждый день — первая же
+            # блокировка внутри дня его выставляет (см. _fetch_with_retries),
+            # и мы досрочно уступаем день, не дожидаясь, пока об этом же
+            # блоке отрапортуют остальные уже летящие статьи.
+            day_abort = threading.Event()
+
+            futures = [
+                executor.submit(_fetch_with_retries, url, session_box, budget, job, day_abort)
+                for url in todo
+            ]
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    url, fetched, status = future.result()
+                except concurrent.futures.CancelledError:
+                    url = None  # отменено до старта: строка останется pending
+                except StoppedForRepeatedBlocks:
+                    url = None  # повторный бан: задача сама остановлена, см. RateGate.on_block
+                if url is not None:
+                    batch.append((url, fetched, status, day))
+                    processed += 1
+                    if len(batch) >= FLUSH_EVERY:
+                        _persist_batch(batch)
+                        batch.clear()
+                    if processed % 10 == 0 or processed == pending_total:
+                        job.set_progress(current=processed,
+                                         message=f"{day}: обработано {processed}/{pending_total}")
+
+                if job.is_cancelled() or day_abort.is_set():
+                    for pending in futures:
+                        pending.cancel()
+                    break
+
+            _persist_batch(batch)
+            batch.clear()
+
+            # День считается done только если для каждого URL из его sitemap
+            # есть РЕАЛЬНЫЙ исход (ok/truncated/premium/empty) — ни одной
+            # строки в статусе pending или failed — и задачу не остановили
+            # посреди дня. Внутридневной повтор failed не делаем (откат
+            # 2026-09-25) — такой день остаётся partial и подхватывается
+            # обычным следующим запуском.
+            fresh_counts = _count_by_status(day)
+            has_pending = fresh_counts.get(ArticleStatus.PENDING.value, 0) > 0
+            has_failed = fresh_counts.get(ArticleStatus.FAILED.value, 0) > 0
+            if job.is_cancelled() or has_pending or has_failed:
+                day_status = DayStatus.PARTIAL.value
+            else:
+                day_status = DayStatus.DONE.value
+            _update_day_stats(day, xml_url, len(urls), day_status)
+            job.set_progress(current=processed)
+
+            now = time.monotonic()
+            if now - last_rate_log >= 120:
+                rate = (processed - rate_log_base) / (now - last_rate_log)
+                job.log(f"Скорость: {rate:.1f} ст/с, обработано {processed}")
+                last_rate_log, rate_log_base = now, processed
+
+    _persist_batch(batch)
+    return processed
+
+
 def run_harvest(job: JobHandle, start: date, end: date, refresh: bool = False) -> None:
     """Собирает статьи за период [start, end] в базу.
 
     refresh=True заставляет перекачать даже те статьи, что уже сохранены.
     """
+    # Сброс в начале всего прогона (не только перед скачиванием статей) —
+    # листинг карт теперь тоже идёт через gate и должен стартовать с чистого
+    # счётчика банов, а не унаследовать состояние от предыдущего прогона.
+    gate.reset()
     job.log(f"Сбор корпуса за период {start} — {end}")
     job.set_progress(stage="sitemaps", message="Ищем суточные карты сайта…")
 
@@ -408,7 +773,7 @@ def run_harvest(job: JobHandle, start: date, end: date, refresh: bool = False) -
     job.set_progress(stage="listing", total=len(sitemaps), current=0,
                      message="Составляем список статей…")
 
-    session = _build_session()
+    session_box = RotatingSession()
 
     # Дни, чья карта уже когда-то была прочитана (в этом или прошлом
     # прогоне) и сохранена как pending-заглушки, листаются не по сети, а
@@ -445,19 +810,54 @@ def run_harvest(job: JobHandle, start: date, end: date, refresh: bool = False) -
     def _list_one_day(day: date, xml_url: str) -> None:
         nonlocal listing_done
         listing_ok = True
-        # Небольшая пауза перед каждым запросом к sitemaps.lefigaro.fr —
-        # находка 2026-09-28: этот поддомен почти не видит обычного
-        # браузерного трафика, поэтому даже умеренный параллельный burst
-        # запросов к нему выглядит подозрительнее, чем такой же по объёму
-        # трафик на www.lefigaro.fr, и блокировка (403) срабатывает за
-        # считанные минуты — даже со свежего IP и реалистичными заголовками.
-        time.sleep(settings.listing_request_delay)
-        try:
-            urls = get_articles_from_sitemap(xml_url, session=session)
-        except Exception as exc:  # noqa: BLE001
-            job.log(f"Не удалось прочитать карту {xml_url}: {exc}", level="warning")
-            urls = []
-            listing_ok = False
+        urls: list[str] = []
+        # Находка 2026-10-05: раньше 403 на листинге просто логировался и
+        # сразу бралась следующая карта — без единой паузы, тысячи дней подряд.
+        # Плотный перебор, где каждый запрос тут же получает отказ и тут же
+        # повторяется на другом URL, — классический признак бота для защиты
+        # уровня Akamai/Cloudflare; блокировки на www.lefigaro.fr начинались
+        # почти сразу после такой серии на листинге. Теперь 403/429 здесь идёт
+        # через тот же RateGate, что и скачивание статей (общий счётчик банов
+        # и общая пауза — есть подозрение, что репутация IP у источника одна
+        # на весь *.lefigaro.fr, а не отдельная по поддоменам).
+        # Цикл крутится ТОЛЬКО вокруг пауз при блокировке (403/429) — на любой
+        # другой сбой (таймаут, обрыв соединения) делаем ровно одну попытку,
+        # как и раньше: день остаётся failed и перечитается на следующем
+        # запуске. Добавлять сюда общий retry-by-attempts не нужно — это
+        # отдельное поведение, о котором не просили, и оно ломает контракт
+        # "один сетевой сбой здесь = сразу перенос на резюме".
+        blocked_waits = 0
+        while True:
+            if not gate.wait_turn(job):
+                listing_ok = False
+                break
+            # Небольшая пауза перед каждым запросом к sitemaps.lefigaro.fr —
+            # находка 2026-09-28 (как в технике сбора 30 сентября): этот поддомен
+            # почти не видит обычного браузерного трафика, поэтому параллельный
+            # burst запросов к нему ловит 403 быстрее, чем статьи.
+            time.sleep(settings.listing_request_delay)
+            try:
+                urls = get_articles_from_sitemap(xml_url, session=session_box.get())
+                gate.on_success()
+                break
+            except requests.exceptions.HTTPError as exc:
+                status_code = exc.response.status_code if exc.response is not None else None
+                if status_code in (403, 429) and blocked_waits < 500:
+                    blocked_waits += 1
+                    session_box.reset()
+                    gate.on_block(job)  # может сама остановить задачу — см. StoppedForRepeatedBlocks
+                    continue
+                job.log(f"Не удалось прочитать карту {xml_url}: {exc}", level="warning")
+                urls = []
+                listing_ok = False
+                break
+            except Exception as exc:  # noqa: BLE001
+                job.log(f"Не удалось прочитать карту {xml_url}: {exc}", level="warning")
+                urls = []
+                listing_ok = False
+                break
+
+        if not listing_ok:
             with listing_lock:
                 listing_failed_days.append(day)
         else:
@@ -492,6 +892,7 @@ def run_harvest(job: JobHandle, start: date, end: date, refresh: bool = False) -
         job.set_progress(current=done_now, message=f"{day}: статей в карте — {len(urls)}")
 
     network_days = [(day, xml_url) for day, xml_url in sitemaps if day not in cached_days]
+    random.shuffle(network_days)
 
     # Находка 2026-09-26: листинг раньше шёл строго последовательно, один
     # день за другим — при нескольких тысячах дней, ещё не листингованных
@@ -563,121 +964,7 @@ def run_harvest(job: JobHandle, start: date, end: date, refresh: bool = False) -
     job.set_progress(stage="articles", current=0, total=max(pending_total, 0),
                      message="Скачиваем статьи…")
 
-    budget = ErrorBudget(job)
-    processed = 0
-    batch: list[tuple[str, FetchedArticle | None, str, date]] = []
-
-    # Находка 2026-09-23: пул потоков раньше пересоздавался НА КАЖДЫЙ день
-    # (тысячи раз за прогон) — заводить и разбирать 16 ОС-потоков тысячи
-    # раз даёт заметные накладные расходы, особенно на Windows. Пул теперь
-    # один на весь прогон. Барьер между днями (все потоки ждут самую
-    # медленную статью текущего дня, прежде чем перейти к следующему)
-    # оставлен как есть — сознательный компромисс: полное снятие барьера
-    # (общая очередь на все дни сразу) требует переписывать логику решения
-    # "день done/partial" на событийную, а это риск на уже идущем
-    # многосуточном сборе. Если этого шага окажется недостаточно —
-    # следующий кандидат на оптимизацию именно барьер, не пул.
-    with concurrent.futures.ThreadPoolExecutor(
-        max_workers=settings.harvest_workers
-    ) as executor:
-        for day, xml_url, urls, listing_ok in per_day:
-            if job.is_cancelled():
-                break
-
-            if not listing_ok:
-                # Карта не прочиталась — для дня нет надёжного списка статей,
-                # done ставить нельзя (см. комментарий у listing_failed_days
-                # выше). Оставляем как failed, следующий запуск перечитает.
-                _update_day_stats(day, xml_url, len(urls), DayStatus.FAILED.value)
-                continue
-
-            # Проверка known ЗДЕСЬ, по одному дню (не по всему периоду
-            # разом) — см. находку 2026-09-28 выше про массовое
-            # недосчитывание known на большом all_urls.
-            known_for_day = set() if refresh else _existing_urls(urls)
-            todo = [url for url in urls if url not in known_for_day]
-            if not todo:
-                _update_day_stats(day, xml_url, len(urls), DayStatus.DONE.value)
-                continue
-
-            _update_day_stats(day, xml_url, len(urls), DayStatus.RUNNING.value)
-            job.log(f"{day}: скачиваем {len(todo)} статей")
-
-            # Свежая сессия на каждый день. Находка 2026-09-25: одна и та же
-            # requests.Session, переиспользуемая часами подряд на тысячах
-            # запросов, постепенно накапливает в своём пуле соединения,
-            # которые удалённая сторона уже закрыла (видно по CloseWait в
-            # netstat) — процессор при этом простаивает, а каждый запрос,
-            # которому достаётся такое "полумёртвое" соединение, ощутимо
-            # дольше падает и переоткрывается заново. За несколько часов
-            # темп проседал с ~6 ст/с до ~1 ст/с без единой ошибки в логе.
-            # Пересоздание пула на границе дня держит его коротко живущим.
-            session = _build_session()
-
-            futures = [
-                executor.submit(_fetch_with_retries, url, session, budget, job)
-                for url in todo
-            ]
-            for future in concurrent.futures.as_completed(futures):
-                url, fetched, status = future.result()
-                batch.append((url, fetched, status, day))
-                processed += 1
-
-                if len(batch) >= FLUSH_EVERY:
-                    _persist_batch(batch)
-                    batch.clear()
-
-                if processed % 10 == 0 or processed == pending_total:
-                    job.set_progress(current=processed,
-                                     message=f"{day}: обработано {processed}/{pending_total}")
-
-                if job.is_cancelled():
-                    for pending in futures:
-                        pending.cancel()
-                    break
-
-            _persist_batch(batch)
-            batch.clear()
-
-            # Откат 2026-09-25: внутридневной повтор failed-статей (несколько
-            # раундов ожидания + ре-скачивание в конце дня) держал уже
-            # занятый воркер-пул занятым ещё дольше и на практике при 8-16
-            # потоках приводил к затяжным "Пауза на 2 мин" сериям и резкому
-            # падению темпа — CPU/GIL и так на пределе от токенизации и
-            # записи в SQLite, а повторы добавляли работу поверх этого же
-            # исчерпанного пула вместо того, чтобы ждать в стороне. День с
-            # failed-статьями просто остаётся partial и подхватывается
-            # следующим обычным запуском за тот же период (см. резюме выше).
-            #
-            # День считается done только если для каждого URL из его sitemap
-            # есть РЕАЛЬНЫЙ исход (ok/truncated/premium/empty/failed) — то есть
-            # ни одной строки не осталось в статусе pending — и среди исходов
-            # нет failed, и задачу не остановили посреди дня.
-            #
-            # Проверка именно через pending_count, а не через сумму всех строк,
-            # потому что с появлением pending-заглушек (см. _persist_pending_urls)
-            # сумма строк равна len(urls) СРАЗУ после листинга, ещё до скачивания
-            # хотя бы одной статьи — старая проверка "accounted < len(urls)"
-            # была бы обманута: день выглядел бы полным по одному только факту,
-            # что урлы известны, а не что они скачаны.
-            #
-            # При паузе часть todo вообще не была начата (futures отменены) —
-            # для них строка остаётся pending, и pending_count > 0 это ловит.
-            # Устаревшее чтение HarvestedDay.failed_count сразу после
-            # RUNNING-отметки (записанной ДО повторных попыток в этом же
-            # прогоне) давало неверный ответ — здесь счёт свежий, прямо из
-            # Article, на момент принятия решения.
-            fresh_counts = _count_by_status(day)
-            has_pending = fresh_counts.get(ArticleStatus.PENDING.value, 0) > 0
-            has_failed = fresh_counts.get(ArticleStatus.FAILED.value, 0) > 0
-            if job.is_cancelled() or has_pending or has_failed:
-                day_status = DayStatus.PARTIAL.value
-            else:
-                day_status = DayStatus.DONE.value
-            _update_day_stats(day, xml_url, len(urls), day_status)
-            job.set_progress(current=processed)
-
-    _persist_batch(batch)
+    processed = _run_download_loop(job, per_day, pending_total, refresh)
 
     if job.is_cancelled():
         job.log(f"Сбор остановлен. Сохранено статей: {processed}.", level="warning")
@@ -685,6 +972,65 @@ def run_harvest(job: JobHandle, start: date, end: date, refresh: bool = False) -
 
     job.set_progress(stage="done", current=processed, total=pending_total,
                      message="Сбор завершён")
+    job.log(f"Готово. Обработано статей: {processed}.")
+
+
+def run_download_pending(job: JobHandle, start: date | None = None, end: date | None = None) -> None:
+    """Докачивает уже известные статьи (status=pending) без единого запроса к листингу.
+
+    Находка 2026-10-05: в базе может накопиться огромный запас уже найденных,
+    но не скачанных URL (URL узнаются при листинге и сохраняются как pending-
+    заглушки, см. _persist_pending_urls) — на момент находки 1.68 млн строк.
+    При этом обычный run_harvest на каждый перезапуск заново пытается
+    листинговать дни, которые ещё НИ РАЗУ не читались (не закэшированы в
+    HarvestedDay), а если sitemaps.lefigaro.fr в этот момент заблокирован —
+    эти попытки гарантированно проваливаются и тратят время прогона впустую,
+    ничего не добавляя. Эта функция работает только с уже известными URL —
+    sitemaps.lefigaro.fr не трогает вообще, только www.lefigaro.fr (сами статьи).
+    """
+    gate.reset()
+    with session_scope() as db:
+        stmt = select(Article.published_date, func.count()).where(
+            Article.status == ArticleStatus.PENDING.value
+        )
+        if start:
+            stmt = stmt.where(Article.published_date >= start)
+        if end:
+            stmt = stmt.where(Article.published_date <= end)
+        day_counts = dict(db.execute(stmt.group_by(Article.published_date)).all())
+
+    if not day_counts:
+        job.log("Нет уже известных, но не скачанных статей за этот период.")
+        job.set_progress(stage="done", current=0, total=0, message="Нечего докачивать")
+        return
+
+    days = sorted(day_counts)
+    pending_total = sum(day_counts.values())
+    job.log(
+        f"Докачка уже известного: {pending_total} статей за {len(days)} дней "
+        f"({days[0]} — {days[-1]}), без обращения к листингу карт сайта."
+    )
+
+    with session_scope() as db:
+        sitemap_by_day = dict(
+            db.execute(
+                select(HarvestedDay.day, HarvestedDay.sitemap_url).where(HarvestedDay.day.in_(days))
+            ).all()
+        )
+
+    # Полный список URL дня (не только pending) — чтобы total_urls в
+    # HarvestedDay не занизился и день не выглядел "меньше", чем он есть.
+    full_urls = _urls_for_days(days)
+    per_day = [(day, sitemap_by_day.get(day) or "", full_urls.get(day, []), True) for day in days]
+
+    job.set_progress(stage="articles", current=0, total=pending_total, message="Скачиваем статьи…")
+    processed = _run_download_loop(job, per_day, pending_total, refresh=False)
+
+    if job.is_cancelled():
+        job.log(f"Докачка остановлена. Сохранено статей: {processed}.", level="warning")
+        return
+
+    job.set_progress(stage="done", current=processed, total=pending_total, message="Докачка завершена")
     job.log(f"Готово. Обработано статей: {processed}.")
 
 

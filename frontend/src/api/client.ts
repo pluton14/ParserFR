@@ -8,7 +8,6 @@ import type {
   ExamplesPage,
   Job,
   ScheduleInfo,
-  TextScope,
 } from "./types";
 
 // Пусто = относительный /api (nginx на проде проксирует его к бэкенду сам,
@@ -49,6 +48,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
+}
+
+// Скорость сбора: потолок запросов в секунду (0 — без ограничения) и число
+// потоков скачивания (действует со следующего запуска сбора).
+export interface Pacing {
+  rate: number;
+  workers: number;
 }
 
 export const api = {
@@ -95,6 +101,21 @@ export const api = {
   corpusRange: () =>
     request<{ first_day: string | null; last_day: string | null }>("/api/corpus/range"),
   corpusCategories: () => request<CategoryCount[]>("/api/corpus/categories"),
+  skipHarvestPause: () => request<{ ok: boolean; rate: number }>("/api/corpus/skip-pause", { method: "POST" }),
+  getPacing: () => request<Pacing>("/api/corpus/pacing"),
+  setPacing: (data: Pacing) =>
+    request<Pacing>("/api/corpus/pacing", { method: "POST", body: JSON.stringify(data) }),
+  downloadPending: (data?: { start_date?: string; end_date?: string }) =>
+    request<Job>("/api/corpus/download-pending", { method: "POST", body: JSON.stringify(data || {}) }),
+  getScheduledRetry: () =>
+    request<{ mode: string; fire_at: string } | null>("/api/corpus/scheduled-retry"),
+  scheduleRetry: (delayHours: number) =>
+    request<{ ok: boolean; fire_at: string }>("/api/corpus/scheduled-retry", {
+      method: "POST",
+      body: JSON.stringify({ delay_hours: delayHours }),
+    }),
+  cancelScheduledRetry: () =>
+    request<{ ok: boolean; cancelled: boolean }>("/api/corpus/scheduled-retry", { method: "DELETE" }),
 
   // --- Анализ ---
   listAnalyses: () => request<AnalysisSummary[]>("/api/analyses"),
@@ -106,7 +127,7 @@ export const api = {
     dictionary_id?: number;
     keywords?: string[];
     categories?: string[];
-    text_scope?: TextScope;
+    text_scope?: string;
   }) => request<Job>("/api/analyses", { method: "POST", body: JSON.stringify(data) }),
   deleteAnalysis: (id: number) => request<void>(`/api/analyses/${id}`, { method: "DELETE" }),
   getExamples: (
@@ -131,5 +152,6 @@ export const api = {
   getJob: (id: string) => request<Job>(`/api/jobs/${id}`),
   cancelJob: (id: string) => request<void>(`/api/jobs/${id}/cancel`, { method: "POST" }),
   getActiveJobs: () => request<Job[]>("/api/jobs/active"),
+  listJobs: (limit = 15) => request<Job[]>(`/api/jobs?limit=${limit}`),
   jobStreamUrl: (id: string) => `${BASE_URL}/api/jobs/${id}/stream`,
 };

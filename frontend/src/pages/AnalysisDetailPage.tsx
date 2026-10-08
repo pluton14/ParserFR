@@ -72,8 +72,13 @@ export default function AnalysisDetailPage() {
           <div>
             <h2>{analysis.name || `Анализ #${analysis.id}`}</h2>
             <p className="muted">
-              {analysis.start_date} — {analysis.end_date} · {analysis.total_processed_articles.toLocaleString("ru-RU")} статей
-              обработано из {analysis.articles_in_corpus.toLocaleString("ru-RU")} в корпусе за период
+              {analysis.start_date} — {analysis.end_date} ·{" "}
+              <span title={`В корпусе за период: ${analysis.articles_in_corpus.toLocaleString("ru-RU")} статей`}>
+                {analysis.total_processed_articles.toLocaleString("ru-RU")} статей проанализировано
+              </span>
+              {analysis.total_words != null && (
+                <> · {analysis.total_words.toLocaleString("ru-RU")} слов в проанализированном тексте</>
+              )}
             </p>
           </div>
           <div className="row">
@@ -179,8 +184,46 @@ export default function AnalysisDetailPage() {
           </div>
 
           <div className="card">
+            <h2>Топ категорий: «{selectedStats.keyword}»</h2>
+            {selectedStats.categories && selectedStats.categories.length > 0 ? (
+              <table>
+                <thead>
+                  <tr>
+                    <th>Категория</th>
+                    <th>Статей со словом</th>
+                    <th>Статей в категории</th>
+                    <th>% статей категории</th>
+                    <th>Вхождений</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {selectedStats.categories.slice(0, 15).map((c) => (
+                    <tr key={c.category}>
+                      <td>{c.category}</td>
+                      <td>{c.articles_with_word.toLocaleString("ru-RU")}</td>
+                      <td>{c.category_articles.toLocaleString("ru-RU")}</td>
+                      <td>{c.percentage.toFixed(2)}%</td>
+                      <td>{c.occurrences.toLocaleString("ru-RU")}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <p className="muted">
+                Нет данных по категориям. Они считаются только в анализах, запущенных после обновления;
+                запустите анализ заново.
+              </p>
+            )}
+          </div>
+
+          <div className="card">
             <h2>Примеры употребления</h2>
-            <ExamplesPanel analysisId={analysis.id} keyword={selectedStats.keyword} />
+            <ExamplesPanel
+              analysisId={analysis.id}
+              keyword={selectedStats.keyword}
+              leftOptions={selectedStats.left_context_words}
+              rightOptions={selectedStats.right_context_words}
+            />
           </div>
         </>
       )}

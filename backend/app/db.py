@@ -109,3 +109,26 @@ def init_db() -> None:
     from . import models  # noqa: F401  — регистрирует таблицы в метаданных
 
     models.Base.metadata.create_all(bind=engine)
+    _add_missing_columns()
+
+
+# create_all не добавляет колонки в уже существующие таблицы. Здесь — только
+# аддитивные правки схемы (ADD COLUMN в SQLite выполняется мгновенно и не
+# перезаписывает файл, даже на многогигабайтной базе).
+_ADDED_COLUMNS = {
+    "articles": [
+        ("captions_gz", "BLOB"),
+        ("captions_extracted", "INTEGER NOT NULL DEFAULT 0"),
+    ],
+}
+
+
+def _add_missing_columns() -> None:
+    from sqlalchemy import text
+
+    with engine.begin() as conn:
+        for table, columns in _ADDED_COLUMNS.items():
+            existing = {row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))}
+            for name, ddl in columns:
+                if name not in existing:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))

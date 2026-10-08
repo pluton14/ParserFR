@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import time
 import zlib
+from collections import Counter, defaultdict
 from dataclasses import asdict
 from datetime import date, datetime
 
@@ -22,6 +23,7 @@ from sqlalchemy.orm import Session, defer
 from ..config import settings
 from ..core.statistics import WordStatistics, build_keyword_plans, scan_article
 from ..core.tokenizer import tokenize_french_text
+from ..core.zones import parse_text_scope
 from ..db import session_scope
 from ..models import Analysis, Article, ArticleStatus, HarvestedDay, JobStatus
 from .jobs import JobHandle
@@ -87,19 +89,30 @@ def mark_analysis_unfinished(analysis_id: int, status: str, error: str | None = 
             row.finished_at = datetime.utcnow()
 
 
-def _article_words(article: Article, text_scope: str) -> list[str]:
-    """Слова статьи для сканирования — по выбранной зоне текста.
+def _article_zones(article: Article, zones: tuple[str, ...]) -> list[list[str]]:
+    """Слова статьи по выбранным зонам — отдельный список на каждую зону.
 
     Находка 2026-09-28: заголовок токенизируется на лету, а не заранее —
     он короткий (в отличие от текста статьи), лишняя нагрузка ничтожна, зато
     работает ретроактивно для ВСЕХ уже собранных статей: title хранился
-    отдельным полем с самого начала, пересбор корпуса не требуется.
+    отдельным полем с самого начала, пересбор корпуса не требуется. Подписи
+    к фото устроены так же — короткие, токенизируются на лету.
+
+    Зоны сканируются раздельно, а не склеиваются в один список: иначе последнее
+    слово заголовка становилось «соседом» первого слова текста, и в контексте
+    выражения оказывались слова из разных частей статьи.
     """
-    if text_scope == "title":
-        return tokenize_french_text(article.title or "")
-    if text_scope == "title_body":
-        return tokenize_french_text(article.title or "") + article.tokens
-    return article.tokens
+    result: list[list[str]] = []
+    for zone in zones:
+        if zone == "title":
+            words = tokenize_french_text(article.title or "")
+        elif zone == "captions":
+            words = tokenize_french_text(article.captions)
+        else:
+            words = article.tokens
+        if words:
+            result.append(words)
+    return result
 
 
 def _build_statistics_payload(
@@ -206,7 +219,10 @@ def run_analysis(
     ordered_keywords = [plan.original for plan in plans]
     stats: dict[str, WordStatistics] = {plan.original: WordStatistics() for plan in plans}
 
-    scope_label = {"body": "текст", "title": "заголовки", "title_body": "заголовки + текст"}[text_scope]
+    zones = parse_text_scope(text_scope)
+    use_captions = "captions" in zones
+    zone_names = {"title": "заголовки", "captions": "подписи к фото", "body": "текст"}
+    scope_label = " + ".join(zone_names[zone] for zone in zones)
     categories_label = f", категории: {', '.join(categories)}" if categories else ""
     job.log(f"Анализ за {start} — {end}, ключевых слов: {len(plans)}, зона: {scope_label}{categories_label}")
     job.set_progress(stage="counting", message="Считаем объём корпуса…")
@@ -236,6 +252,13 @@ def run_analysis(
     example_limit = settings.example_limit_per_keyword
     seen = 0  # все просмотренные статьи — именно по ним считаются проценты
     processed = 0
+    # Объём проанализированного текста (в словах, как их режет токенизатор — по
+    # всем выбранным зонам) и разбивка по категориям: сколько статей категории
+    # просмотрено и в скольких из них встретилось каждое слово словаря.
+    total_words = 0
+    category_totals: Counter[str] = Counter()
+    category_hits: dict[str, Counter[str]] = defaultdict(Counter)
+    category_occurrences: dict[str, Counter[str]] = defaultdict(Counter)
     last_id = 0
     cursor_date = start
 
@@ -264,8 +287,14 @@ def run_analysis(
                 .limit(CHUNK_SIZE)
                 # Полный текст (text_gz) анализу не нужен — только токены и
                 # заголовок. По сети с Turso он удваивал объём каждой пачки.
-                .options(defer(Article.text_gz))
+                .options(*([defer(Article.text_gz)] + ([] if use_captions else [defer(Article.captions_gz)])))
             )
+            if use_captions:
+                # Подписи извлечены не у всех статей: у собранных до 2026-10-01
+                # флага нет, пока их не добрал backfill. Берём только те, где
+                # зона реально известна, — иначе «нет подписей» путалось бы с
+                # «подписи не извлекали» и занижало проценты.
+                stmt = stmt.where(Article.captions_extracted == 1)
             if categories:
                 stmt = stmt.where(Article.category.in_(categories))
             rows = db.execute(stmt).scalars().all()
@@ -279,22 +308,31 @@ def run_analysis(
                 cursor_date = article.published_date
                 last_id = article.id
                 seen += 1
-                words = _article_words(article, text_scope)
-                if not words:
+                zone_words = _article_zones(article, zones)
+                if not zone_words:
                     continue
 
-                counts = scan_article(
-                    words,
-                    plans,
-                    stats,
-                    url=article.url,
-                    published_date=article.published_date.isoformat(),
-                    title=article.title,
-                    example_limit=example_limit,
-                )
-                for keyword, count in counts.items():
-                    if count > 0:
-                        stats[keyword].articles_with_word += 1
+                total_words += sum(len(words) for words in zone_words)
+                category = article.category or "Без категории"
+                category_totals[category] += 1
+                hit_keywords: set[str] = set()
+                for words in zone_words:
+                    counts = scan_article(
+                        words,
+                        plans,
+                        stats,
+                        url=article.url,
+                        published_date=article.published_date.isoformat(),
+                        title=article.title,
+                        example_limit=example_limit,
+                    )
+                    hit_keywords.update(k for k, count in counts.items() if count > 0)
+                    for k, count in counts.items():
+                        if count > 0:
+                            category_occurrences[k][category] += count
+                for keyword in hit_keywords:
+                    stats[keyword].articles_with_word += 1
+                    category_hits[keyword][category] += 1
 
                 processed += 1
 
@@ -327,6 +365,13 @@ def run_analysis(
         stats, ordered_keywords, start, end, with_text
     )
     statistics_payload["articles_in_corpus"] = total_in_corpus
+    statistics_payload["total_words"] = total_words
+    statistics_payload["category_totals"] = dict(category_totals)
+    for keyword in ordered_keywords:
+        statistics_payload["statistics"][keyword]["categories"] = {
+            cat: {"articles": n, "occurrences": category_occurrences[keyword][cat]}
+            for cat, n in category_hits[keyword].items()
+        }
 
     examples_payload = {
         keyword: [asdict(example) for example in stats[keyword].examples]

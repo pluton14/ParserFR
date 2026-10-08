@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, ApiError } from "../api/client";
-import type { ExampleItem } from "../api/types";
+import type { ContextWord, ExampleItem } from "../api/types";
+import WordPicker from "./WordPicker";
 
 function highlight(item: ExampleItem) {
   return (
@@ -10,24 +11,64 @@ function highlight(item: ExampleItem) {
   );
 }
 
-export default function ExamplesPanel({ analysisId, keyword }: { analysisId: number; keyword: string }) {
+// Слово как токен для сравнения: без регистра и без знаков вокруг.
+const norm = (w: string) => w.toLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+const lastWord = (text: string) => norm(text.trim().split(/\s+/).pop() || "");
+const firstWord = (text: string) => norm(text.trim().split(/\s+/)[0] || "");
+
+export default function ExamplesPanel({
+  analysisId,
+  keyword,
+  leftOptions,
+  rightOptions,
+}: {
+  analysisId: number;
+  keyword: string;
+  // Слова, найденные рядом с ключевым в ходе анализа, — варианты для подсказки.
+  leftOptions: ContextWord[];
+  rightOptions: ContextWord[];
+}) {
   const [items, setItems] = useState<ExampleItem[]>([]);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
-  const [search, setSearch] = useState("");
+  // Фильтр по ближайшему слову слева/справа от найденного ключевого слова.
+  // Можно выбрать несколько слов: внутри одного поля они работают как «или».
+  const [leftWords, setLeftWords] = useState<string[]>([]);
+  const [rightWords, setRightWords] = useState<string[]>([]);
+  const wordFilter = leftWords.length > 0 || rightWords.length > 0;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const limit = 20;
 
   useEffect(() => {
     setOffset(0);
-  }, [keyword, search]);
+  }, [keyword, leftWords, rightWords]);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    api
-      .getExamples(analysisId, keyword, offset, limit, search || undefined)
+    const load = async () => {
+      if (!wordFilter) {
+        const page = await api.getExamples(analysisId, keyword, offset, limit);
+        return { items: page.items, total: page.total };
+      }
+      // Сервер фильтрует только по подстроке, поэтому при фильтре по слову слева/справа
+      // забираем все примеры пачками по 500 и отбираем точное соседнее слово здесь.
+      const l = new Set(leftWords.map(norm));
+      const r = new Set(rightWords.map(norm));
+      const matched: ExampleItem[] = [];
+      for (let from = 0; ; from += 500) {
+        const page = await api.getExamples(analysisId, keyword, from, 500);
+        for (const it of page.items) {
+          if (l.size && !l.has(lastWord(it.context_before))) continue;
+          if (r.size && !r.has(firstWord(it.context_after))) continue;
+          matched.push(it);
+        }
+        if (cancelled || from + 500 >= page.total) break;
+      }
+      return { items: matched.slice(offset, offset + limit), total: matched.length };
+    };
+    load()
       .then((page) => {
         if (cancelled) return;
         setItems(page.items);
@@ -43,19 +84,19 @@ export default function ExamplesPanel({ analysisId, keyword }: { analysisId: num
     return () => {
       cancelled = true;
     };
-  }, [analysisId, keyword, offset, search]);
+  }, [analysisId, keyword, offset, leftWords, rightWords]);
 
   return (
     <div>
-      <div className="row" style={{ marginBottom: 10 }}>
-        <input
-          type="text"
-          placeholder="Поиск по примерам…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          style={{ maxWidth: 280 }}
-        />
-        <span className="muted">Всего примеров: {total}</span>
+      <div className="examples-filters">
+        <WordPicker label="Слово слева" values={leftWords} onChange={setLeftWords} options={leftOptions} />
+        <WordPicker label="Слово справа" values={rightWords} onChange={setRightWords} options={rightOptions} />
+        {wordFilter && (
+          <button className="secondary" onClick={() => { setLeftWords([]); setRightWords([]); }}>
+            Сбросить
+          </button>
+        )}
+        <span className="count">Всего примеров: {total}</span>
       </div>
       {error && <p className="error-text">{error}</p>}
       {loading ? (

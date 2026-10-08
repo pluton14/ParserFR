@@ -30,10 +30,14 @@ def _register_job_row(job_id: str) -> None:
         db.add(Job(id=job_id, type="harvest"))
 
 
-def test_cancelling_mid_day_marks_it_partial_not_done(app_env):
+def test_cancelling_mid_day_marks_it_partial_not_done(app_env, monkeypatch):
     from sqlalchemy import select
 
+    from app.config import settings
     from app.db import session_scope
+
+    # Два потока на шесть статей: остановка должна застать часть задач в очереди.
+    monkeypatch.setattr(settings, "harvest_workers", 2)
     from app.models import Article, DayStatus, HarvestedDay
     from app.services.harvest import run_harvest
     from app.services.jobs import JobHandle

@@ -13,8 +13,10 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import date, datetime
 
+import lxml.html
 import requests
 from bs4 import BeautifulSoup
+from lxml.cssselect import CSSSelector
 
 from ..config import settings
 
@@ -37,6 +39,10 @@ class PremiumArticle(Exception):
     """Источник ответил 500 — статья платная, пропускаем без повторов."""
 
 
+class GonePage(Exception):
+    """Источник ответил 404/410 — страницы нет, повторы бессмысленны."""
+
+
 @dataclass
 class FetchedArticle:
     url: str
@@ -44,6 +50,8 @@ class FetchedArticle:
     title: str | None
     category: str | None
     truncated: bool = False
+    # Подписи под фото статьи (без указания агентства), по одной на строку.
+    captions: str = ""
 
 
 # Маркеры платной статьи, отданной в виде затравки.
@@ -152,11 +160,90 @@ def _extract_title(soup: BeautifulSoup) -> str | None:
     return None
 
 
+# --- Разбор страницы через lxml -------------------------------------------
+# Замер 2026-10-01 на 37 страницах 2012 года: BeautifulSoup(html.parser) — 77 мс
+# на страницу, lxml.html напрямую — 10.7 мс при полностью совпадающем тексте
+# (37/37). Разбор шёл под GIL и ограничивал весь сбор ~12 статьями в секунду,
+# сколько бы потоков ни было. selectolax быстрее (2 мс), но расходится в
+# пробелах (27/37), поэтому не используется — корпус должен остаться сравнимым.
+_PARAGRAPHS = CSSSelector(settings.article_selector)
+_PAYWALL = CSSSelector(PAYWALL_SELECTORS)
+# Подписи — только внутри <article>: боковые виджеты («читайте также») вне него.
+_LEGENDS = CSSSelector("article figcaption.fig-media__legend")
+_H1 = CSSSelector("h1")
+_TEXT_NODES = './/text()[not(ancestor::script) and not(ancestor::style)]'
+_TEXT_NODES_NO_CREDITS = (
+    './/text()[not(ancestor::script) and not(ancestor::style)'
+    ' and not(ancestor::*[contains(concat(" ", normalize-space(@class), " "), " fig-media__credits ")])]'
+)
+
+
+def _join_text(node, xpath: str = _TEXT_NODES) -> str:
+    """То же, что BeautifulSoup.get_text(" ", strip=True): куски текста без
+    пустых, склеенные пробелом."""
+    parts = (t.strip() for t in node.xpath(xpath))
+    return " ".join(p for p in parts if p)
+
+
+def _is_truncated_doc(doc, html: str) -> bool:
+    """Версия _is_truncated для lxml-документа (логика та же)."""
+    if _PAYWALL(doc):
+        return True
+    lowered = html.lower()
+    return any(phrase in lowered for phrase in PAYWALL_PHRASES)
+
+
+def _extract_title_doc(doc) -> str | None:
+    og = doc.xpath('//meta[@property="og:title"]/@content')
+    if og and og[0].strip():
+        return og[0].strip()
+    titles = doc.xpath("//title")
+    if titles and titles[0].text and titles[0].text.strip():
+        return titles[0].text.strip()
+    headings = _H1(doc)
+    if headings:
+        return _join_text(headings[0])
+    return None
+
+
+def _extract_captions(doc) -> str:
+    """Подписи под фото статьи: по одной на строку, без дублей и без агентства."""
+    seen: list[str] = []
+    for legend in _LEGENDS(doc):
+        text = _join_text(legend, _TEXT_NODES_NO_CREDITS)
+        if text and text not in seen:
+            seen.append(text)
+    return "\n".join(seen)
+
+
+def parse_article_html(url: str, raw: bytes | str, encoding: str = "utf-8") -> FetchedArticle:
+    """Из HTML страницы — текст, заголовок, подписи и признак платной затравки.
+
+    Кодировка задаётся явно: lxml без неё при отсутствии <meta charset> считает
+    байты latin-1 и портит диакритику. Раньше эту работу делал response.text,
+    теперь тот же encoding от requests передаётся сюда.
+    """
+    if isinstance(raw, str):
+        raw = raw.encode("utf-8")
+        encoding = "utf-8"
+    doc = lxml.html.fromstring(raw, parser=lxml.html.HTMLParser(encoding=encoding))
+    html_text = raw.decode(encoding, errors="replace")
+    text = " ".join(_join_text(p) for p in _PARAGRAPHS(doc))
+    return FetchedArticle(
+        url=url,
+        text=text,
+        title=_extract_title_doc(doc),
+        category=extract_category_from_url(url),
+        truncated=_is_truncated_doc(doc, html_text),
+        captions=_extract_captions(doc),
+    )
+
+
 def fetch_article(url: str, session: requests.Session | None = None) -> FetchedArticle:
     """Скачивает статью и возвращает её текст.
 
-    Бросает PremiumArticle при 500 и requests-исключения в остальных
-    ошибочных случаях — повторы организует вызывающий код.
+    Бросает PremiumArticle при 500, GonePage при 404/410 и requests-исключения
+    в остальных ошибочных случаях — повторы организует вызывающий код.
     """
     client = session or _session()
     response = client.get(
@@ -168,18 +255,11 @@ def fetch_article(url: str, session: requests.Session | None = None) -> FetchedA
     if response.status_code == 500:
         # Premium article, skip it
         raise PremiumArticle(url)
+    if response.status_code in (404, 410):
+        # Находка 2026-10-01: раньше 404 уходил в общий retry (3 попытки) и
+        # оседал в failed навсегда. Страницы, которых нет у источника, — это
+        # не сбой сети, повторять их незачем.
+        raise GonePage(url)
 
     response.raise_for_status()
-    soup = BeautifulSoup(response.text, "html.parser")
-
-    text = " ".join(
-        p.get_text(" ", strip=True) for p in soup.select(settings.article_selector)
-    )
-
-    return FetchedArticle(
-        url=url,
-        text=text,
-        title=_extract_title(soup),
-        category=extract_category_from_url(url),
-        truncated=_is_truncated(soup, response.text),
-    )
+    return parse_article_html(url, response.content, response.encoding or "utf-8")

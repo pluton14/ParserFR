@@ -93,6 +93,13 @@ class Article(Base):
     tokens_gz: Mapped[bytes | None] = mapped_column(LargeBinary)
     token_count: Mapped[int] = mapped_column(Integer, default=0)
 
+    # Подписи под фото статьи (без агентства), по одной на строку, сжатые.
+    # captions_extracted отличает «подписей нет» от «ещё не извлекали»: до
+    # 2026-10-01 экстрактор подписей не было, и у ~1 млн ранее собранных статей
+    # флаг 0 — их добирает отдельная задача (backfill), а не полный пересбор.
+    captions_gz: Mapped[bytes | None] = mapped_column(LargeBinary)
+    captions_extracted: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+
     fetched_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     __table_args__ = (
@@ -108,10 +115,38 @@ class Article(Base):
         raw = decompress(self.tokens_gz)
         return raw.split("\n") if raw else []
 
+    @property
+    def captions(self) -> str:
+        return decompress(self.captions_gz)
+
     def set_content(self, text: str, tokens: list[str]) -> None:
         self.text_gz = compress(text)
         self.tokens_gz = compress("\n".join(tokens))
         self.token_count = len(tokens)
+
+    def set_captions(self, captions: str) -> None:
+        self.captions_gz = compress(captions) if captions else None
+        self.captions_extracted = 1
+
+
+class ScheduledRetry(Base):
+    """Отложенный повтор сбора/докачки, который пользователь ставит из интерфейса
+    (например, "попробовать через 2 часа" после блокировки источника).
+
+    Нарочно не связан с ночным автосбором (APScheduler-джоб "nightly_harvest",
+    см. scheduler.py) — тот управляется настройкой scheduler_enabled и может
+    быть выключен, а эта функция должна работать независимо. Хранится в базе,
+    а не только в памяти планировщика: переживает перезапуск сервера — при
+    старте приложение перечитывает эту строку и досрочно ставит job заново.
+    В один момент времени — не больше одной строки (id всегда 1).
+    """
+
+    __tablename__ = "scheduled_retry"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    mode: Mapped[str] = mapped_column(String(32))  # пока только "download_pending"
+    fire_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
 class HarvestedDay(Base):

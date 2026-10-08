@@ -13,9 +13,13 @@ from sqlalchemy.orm import Session
 from ..config import settings
 from ..db import get_db
 from ..models import Article, ArticleStatus, HarvestedDay, JobType
-from ..schemas import CorpusSummary, DayCoverage, HarvestRequest, JobOut
-from ..services.harvest import run_harvest
+from ..schemas import BackfillRequest, CorpusSummary, DayCoverage, HarvestRequest, JobOut
+from ..services.backfill import run_backfill_captions
+from ..services.harvest import gate as harvest_gate
+from ..services.pacing import MAX_WORKERS, pacing
+from ..services.harvest import run_download_pending, run_harvest
 from ..services.jobs import registry
+from ..services.retry_scheduler import cancel_retry, get_scheduled_retry, schedule_retry
 from ..services.scheduler import next_run_time
 
 router = APIRouter(prefix="/api/corpus", tags=["corpus"])
@@ -158,6 +162,119 @@ def start_harvest(payload: HarvestRequest) -> JobOut:
             "end_date": payload.end_date.isoformat(),
             "refresh": payload.refresh,
             "trigger": "manual",
+        },
+    )
+    return JobOut(**job.snapshot())
+
+
+@router.post("/skip-pause")
+def skip_harvest_pause() -> dict:
+    """Досрочно снимает текущую паузу после блокировки — ручная кнопка «Повторить сейчас».
+
+    Темп и счётчик банов (для автостопа после нескольких подряд) не трогает —
+    только перестаёт ждать оставшееся время паузы.
+    """
+    harvest_gate.skip_pause()
+    return {"ok": True, "rate": harvest_gate.rate}
+
+
+@router.get("/pacing")
+def get_pacing() -> dict:
+    return pacing.snapshot()
+
+
+@router.post("/pacing")
+def set_pacing(payload: dict) -> dict:
+    """Скорость сбора: потолок запросов в секунду (0 — без ограничения, как в
+    технике сбора 30 сентября; действует сразу) и число потоков скачивания
+    (действует со следующего запуска сбора)."""
+    try:
+        rate = float(payload.get("rate"))
+        workers = int(payload.get("workers"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="rate и workers должны быть числами")
+    if rate < 0:
+        raise HTTPException(status_code=400, detail="Потолок темпа: число ≥ 0 (0 — без ограничения)")
+    if not 1 <= workers <= MAX_WORKERS:
+        raise HTTPException(status_code=400, detail=f"Потоков: от 1 до {MAX_WORKERS}")
+    pacing.update(rate, workers)
+    return {"ok": True, **pacing.snapshot()}
+
+
+@router.post("/download-pending", response_model=JobOut, status_code=202)
+def start_download_pending(payload: BackfillRequest) -> JobOut:
+    """Докачивает уже известные, но не скачанные статьи — без обращения к
+    листингу карт сайта (sitemaps.lefigaro.fr). Полезно, когда листинг для
+    ещё не читанных дней сейчас заблокирован, а в базе уже накопился большой
+    запас найденных ранее, но не скачанных URL."""
+    if settings.readonly_demo:
+        raise HTTPException(status_code=403, detail="В демо-копии сбор отключён.")
+
+    active = registry.active_of_type(JobType.HARVEST.value)
+    if active is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "Сбор или добор уже идёт.", "job_id": active.id},
+        )
+
+    job = registry.submit(
+        JobType.HARVEST.value,
+        lambda handle: run_download_pending(handle, payload.start_date, payload.end_date),
+        params={
+            "mode": "download_pending",
+            "start_date": payload.start_date.isoformat() if payload.start_date else None,
+            "end_date": payload.end_date.isoformat() if payload.end_date else None,
+        },
+    )
+    return JobOut(**job.snapshot())
+
+
+@router.get("/scheduled-retry")
+def get_scheduled_retry_endpoint() -> dict | None:
+    return get_scheduled_retry()
+
+
+@router.post("/scheduled-retry")
+def set_scheduled_retry(payload: dict) -> dict:
+    """Ставит "докачку уже известного" на отложенный автозапуск через N часов —
+    например, пока источник не остынет после блокировки. Переживает
+    перезапуск сервера (хранится в базе, восстанавливается при старте)."""
+    delay_hours = payload.get("delay_hours")
+    if not isinstance(delay_hours, (int, float)) or delay_hours <= 0:
+        raise HTTPException(status_code=400, detail="delay_hours должен быть числом > 0")
+    fire_at = schedule_retry(float(delay_hours))
+    return {"ok": True, "fire_at": fire_at.isoformat()}
+
+
+@router.delete("/scheduled-retry")
+def delete_scheduled_retry() -> dict:
+    return {"ok": True, "cancelled": cancel_retry()}
+
+
+@router.post("/backfill-captions", response_model=JobOut, status_code=202)
+def start_backfill_captions(payload: BackfillRequest) -> JobOut:
+    """Добирает подписи к фото у статей, собранных до появления экстрактора подписей.
+
+    Идёт тем же типом задачи, что и сбор: оба качают с одного источника, и
+    параллельный запуск только удвоил бы нагрузку на него.
+    """
+    if settings.readonly_demo:
+        raise HTTPException(status_code=403, detail="В демо-копии сбор отключён.")
+
+    active = registry.active_of_type(JobType.HARVEST.value)
+    if active is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "Сбор или добор уже идёт.", "job_id": active.id},
+        )
+
+    job = registry.submit(
+        JobType.HARVEST.value,
+        lambda handle: run_backfill_captions(handle, payload.start_date, payload.end_date),
+        params={
+            "mode": "backfill_captions",
+            "start_date": payload.start_date.isoformat() if payload.start_date else None,
+            "end_date": payload.end_date.isoformat() if payload.end_date else None,
         },
     )
     return JobOut(**job.snapshot())

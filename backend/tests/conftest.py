@@ -18,6 +18,7 @@ def app_env(monkeypatch, tmp_path):
     """
     monkeypatch.setenv("PARSERFR_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("PARSERFR_SCHEDULER_ENABLED", "false")
+    monkeypatch.setenv("PARSERFR_HARVEST_RATE", "0")
 
     for name in list(sys.modules):
         if name.startswith("app."):

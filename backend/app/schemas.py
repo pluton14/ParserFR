@@ -6,6 +6,8 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from .core.zones import format_text_scope, parse_text_scope
+
 def clean_keywords(value: list[str]) -> list[str]:
     """Убирает пустые строки и повторы, сохраняя порядок и исходный регистр."""
     seen: set[str] = set()
@@ -20,6 +22,12 @@ def clean_keywords(value: list[str]) -> list[str]:
 
 
 # --- Корпус ---
+
+class BackfillRequest(BaseModel):
+    # Без дат — добираем всё, где подписи ещё не извлекались.
+    start_date: date | None = None
+    end_date: date | None = None
+
 
 class HarvestRequest(BaseModel):
     start_date: date
@@ -107,7 +115,8 @@ class AnalysisRequest(BaseModel):
     # None/пусто — все категории. Иначе — статья учитывается, только если
     # её category входит в список (множественный выбор).
     categories: list[str] | None = None
-    # "body" (по умолчанию, как раньше) | "title" | "title_body".
+    # Зоны статьи: "body" (по умолчанию, как раньше) | "title" | "title_body"
+    # либо список через запятую из title, captions, body (см. core/zones.py).
     text_scope: str = "body"
 
     @field_validator("end_date")
@@ -121,9 +130,7 @@ class AnalysisRequest(BaseModel):
     @field_validator("text_scope")
     @classmethod
     def check_text_scope(cls, value: str) -> str:
-        if value not in ("body", "title", "title_body"):
-            raise ValueError("text_scope должен быть body, title или title_body")
-        return value
+        return format_text_scope(parse_text_scope(value))
 
 
 class AnalysisSummary(BaseModel):
@@ -144,6 +151,14 @@ class AnalysisSummary(BaseModel):
     finished_at: datetime | None
 
 
+class CategoryStat(BaseModel):
+    category: str
+    articles_with_word: int  # статей категории, где слово встретилось
+    category_articles: int  # всего просмотренных статей этой категории
+    percentage: float  # доля статей категории со словом
+    occurrences: int
+
+
 class KeywordStats(BaseModel):
     keyword: str
     articles_with_word: int
@@ -152,6 +167,9 @@ class KeywordStats(BaseModel):
     total_occurrences: int
     left_context_words: list[ContextWord]
     right_context_words: list[ContextWord]
+    # Топ категорий по числу статей со словом. Пусто у анализов, посчитанных до
+    # появления этой разбивки (их нужно пересчитать).
+    categories: list[CategoryStat] = Field(default_factory=list)
 
 
 class ContextWord(BaseModel):
@@ -168,6 +186,8 @@ class TimeseriesPoint(BaseModel):
 
 class AnalysisDetail(AnalysisSummary):
     articles_in_corpus: int = 0
+    # Сумма слов проанализированного текста; None у анализов, посчитанных раньше.
+    total_words: int | None = None
     stats: list[KeywordStats] = Field(default_factory=list)
     timeseries: dict[str, list[TimeseriesPoint]] = Field(default_factory=dict)
 

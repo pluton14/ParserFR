@@ -13,9 +13,9 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import settings
 from .db import init_db, session_scope
-from .models import Dictionary
 from .routers import analyses, corpus, dictionaries, jobs
 from .services.jobs import recover_stale_jobs
+from .services.retry_scheduler import start_retry_scheduler, stop_retry_scheduler
 from .services.scheduler import start_scheduler, stop_scheduler
 
 # Находка 2026-09-29: на однослужебном деплое (Replit) фронтенд и бэкенд —
@@ -31,53 +31,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Словарь из исходного dict.txt — чтобы на чистой установке было с чем работать.
-SEED_KEYWORDS = [
-    "invasion russe",
-    "troupes russes",
-    "autorités russes",
-    "soldats russes",
-    "Crimée annexée",
-    "union soviétique",
-    "république soviétique",
-    "ex-république soviétique",
-    "forces russes",
-    "séparatiste prorusse",
-    "armée russe",
-    "guerre en Ukraine",
-    "Église orthodoxe russe",
-    "Église indépendante ukrainienne",
-    "ministère russe",
-    "président russe",
-]
-
-
-def seed_default_dictionary() -> None:
-    with session_scope() as db:
-        if db.query(Dictionary).count() > 0:
-            return
-        db.add(
-            Dictionary(
-                name="Базовый словарь",
-                description="Перенесён из dict.txt десктопной версии",
-                keywords=SEED_KEYWORDS,
-            )
-        )
-        logger.info("Создан словарь по умолчанию")
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
     # Задачи, оставшиеся «выполняющимися» после падения процесса, живыми
     # уже не станут — честнее сразу показать их упавшими.
     recover_stale_jobs()
-    seed_default_dictionary()
     start_scheduler()
+    # Независим от scheduler_enabled: это пользовательская кнопка "попробовать
+    # снова через N часов", не ночной автосбор.
+    start_retry_scheduler()
     try:
         yield
     finally:
         stop_scheduler()
+        stop_retry_scheduler()
 
 
 app = FastAPI(

@@ -3,6 +3,7 @@ import DictionariesPage from "./pages/DictionariesPage";
 import CorpusPage from "./pages/CorpusPage";
 import AnalysesPage from "./pages/AnalysesPage";
 import AnalysisDetailPage from "./pages/AnalysisDetailPage";
+import AutoUpdateBanner from "./components/AutoUpdateBanner";
 
 // Находка 2026-09-29: демо-развёртывание (Cloudflare) показывает
 // зафиксированный снимок базы без сбора — вкладка «Корпус» там не нужна
@@ -23,6 +24,7 @@ export default function App() {
         </nav>
       </header>
       <main className="app-main">
+        <AutoUpdateBanner />
         <Routes>
           <Route path="/" element={<DictionariesPage />} />
           <Route

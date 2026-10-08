@@ -182,7 +182,7 @@ function DictionaryEditor({
           rows={10}
           value={keywordsText}
           onChange={(e) => setKeywordsText(e.target.value)}
-          placeholder={"invasion russe\ntroupes russes\narmée russe"}
+          placeholder={"слово или фраза\nещё слово или фраза"}
         />
       </div>
       {error && <p className="error-text">{error}</p>}

@@ -17,6 +17,7 @@ from ..schemas import (
     AnalysisDetail,
     AnalysisRequest,
     AnalysisSummary,
+    CategoryStat,
     ContextWord,
     ExamplesPage,
     JobOut,
@@ -163,6 +164,23 @@ def get_analysis(analysis_id: int, db: Session = Depends(get_db)) -> AnalysisDet
         if entry is None:
             continue
         occurrences = entry.get("total_occurrences", 0)
+        category_totals = payload.get("category_totals", {})
+        categories = sorted(
+            (
+                CategoryStat(
+                    category=cat,
+                    articles_with_word=v.get("articles", 0),
+                    category_articles=category_totals.get(cat, 0),
+                    percentage=round(v.get("articles", 0) / category_totals[cat] * 100, 2)
+                    if category_totals.get(cat)
+                    else 0.0,
+                    occurrences=v.get("occurrences", 0),
+                )
+                for cat, v in entry.get("categories", {}).items()
+            ),
+            key=lambda c: c.articles_with_word,
+            reverse=True,
+        )
         stats.append(
             KeywordStats(
                 keyword=keyword,
@@ -176,6 +194,7 @@ def get_analysis(analysis_id: int, db: Session = Depends(get_db)) -> AnalysisDet
                 right_context_words=_context_words(
                     entry.get("right_context_words", {}), occurrences
                 ),
+                categories=categories,
             )
         )
 
@@ -194,6 +213,7 @@ def get_analysis(analysis_id: int, db: Session = Depends(get_db)) -> AnalysisDet
         created_at=row.created_at,
         finished_at=row.finished_at,
         articles_in_corpus=payload.get("articles_in_corpus", 0),
+        total_words=payload.get("total_words"),
         stats=stats,
         timeseries=timeseries,
     )

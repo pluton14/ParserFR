@@ -1,26 +1,28 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, ApiError } from "../api/client";
-import type { AnalysisSummary, CategoryCount, Dictionary, TextScope } from "../api/types";
+import type { AnalysisSummary, CategoryCount, Dictionary, Zone } from "../api/types";
 import JobProgress from "../components/JobProgress";
 import { useJobProgress } from "../hooks/useJobProgress";
 import { jobStatusLabel } from "../lib/labels";
 
-const TEXT_SCOPE_LABELS: Record<TextScope, string> = {
-  body: "Основной текст",
-  title: "Только заголовки",
-  title_body: "Заголовки + текст",
-};
+const ZONES: { zone: Zone; label: string }[] = [
+  { zone: "title", label: "Заголовки" },
+  { zone: "captions", label: "Подписи к фото" },
+  { zone: "body", label: "Основной текст" },
+];
 
-// И "заголовки", и "текст" сняты одновременно не бывает — хотя бы одна
-// зона всегда должна остаться выбранной, иначе анализу нечего сканировать.
-// Снятие второго флага при обеих включённых оставляет ПЕРВУЮ (ту, что
-// осталась true) — простое и предсказуемое правило.
-function pickTextScope(wantTitle: boolean, wantBody: boolean): TextScope {
-  if (wantTitle && wantBody) return "title_body";
-  if (wantTitle) return "title";
-  if (wantBody) return "body";
-  return "body";
+// Хотя бы одна зона всегда остаётся выбранной, иначе анализу нечего сканировать.
+function toggleZone(zones: Zone[], zone: Zone, on: boolean): Zone[] {
+  const next = ZONES.map((z) => z.zone).filter((z) => (z === zone ? on : zones.includes(z)));
+  return next.length > 0 ? next : zones;
+}
+
+// Подпись набора зон в истории: понимает и прежние значения ("title_body"), и список через запятую.
+function scopeLabel(textScope: string): string {
+  const legacy: Record<string, Zone[]> = { body: ["body"], title: ["title"], title_body: ["title", "body"] };
+  const zones = (legacy[textScope] ?? (textScope.split(",") as Zone[]));
+  return ZONES.filter((z) => zones.includes(z.zone)).map((z) => z.label).join(" + ");
 }
 
 export default function AnalysesPage() {
@@ -35,7 +37,7 @@ export default function AnalysesPage() {
   const [endDate, setEndDate] = useState("");
   const [name, setName] = useState("");
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
-  const [textScope, setTextScope] = useState<TextScope>("body");
+  const [zones, setZones] = useState<Zone[]>(["body"]);
   const [jobId, setJobId] = useState<string | null>(null);
   const navigate = useNavigate();
   const { job } = useJobProgress(jobId);
@@ -118,7 +120,7 @@ export default function AnalysesPage() {
         dictionary_id: dictionaryId,
         name: name || undefined,
         categories: selectedCategories.length > 0 ? selectedCategories : undefined,
-        text_scope: textScope,
+        text_scope: zones.join(","),
       });
       setJobId(j.id);
       setError(null);
@@ -191,35 +193,21 @@ export default function AnalysesPage() {
               <label className="checkbox-label">
                 <input
                   type="checkbox"
-                  checked={textScope === "title_body"}
-                  onChange={(e) => setTextScope(e.target.checked ? "title_body" : "body")}
+                  checked={zones.length === ZONES.length}
+                  onChange={(e) => setZones(e.target.checked ? ZONES.map((z) => z.zone) : ["body"])}
                 />
                 Все
               </label>
-              <label className="checkbox-label">
-                <input
-                  type="checkbox"
-                  checked={textScope === "title" || textScope === "title_body"}
-                  onChange={(e) => {
-                    const wantTitle = e.target.checked;
-                    const wantBody = textScope === "body" || textScope === "title_body";
-                    setTextScope(pickTextScope(wantTitle, wantBody));
-                  }}
-                />
-                Заголовки
-              </label>
-              <label className="checkbox-label">
-                <input
-                  type="checkbox"
-                  checked={textScope === "body" || textScope === "title_body"}
-                  onChange={(e) => {
-                    const wantBody = e.target.checked;
-                    const wantTitle = textScope === "title" || textScope === "title_body";
-                    setTextScope(pickTextScope(wantTitle, wantBody));
-                  }}
-                />
-                Основной текст
-              </label>
+              {ZONES.map(({ zone, label }) => (
+                <label className="checkbox-label" key={zone}>
+                  <input
+                    type="checkbox"
+                    checked={zones.includes(zone)}
+                    onChange={(e) => setZones(toggleZone(zones, zone, e.target.checked))}
+                  />
+                  {label}
+                </label>
+              ))}
             </div>
           </div>
           <div style={{ flex: 1, minWidth: 260 }}>
@@ -304,7 +292,7 @@ export default function AnalysesPage() {
                   <td><Link to={`/analyses/${a.id}`}>{a.name || `Анализ #${a.id}`}</Link></td>
                   <td>{a.start_date} — {a.end_date}</td>
                   <td className="muted">
-                    {TEXT_SCOPE_LABELS[a.text_scope]}
+                    {scopeLabel(a.text_scope)}
                     {a.categories && a.categories.length > 0
                       ? ` · ${a.categories.length === 1 ? a.categories[0] : `${a.categories.length} категорий`}`
                       : ""}

@@ -5,6 +5,8 @@ pydantic-settings==2.7.0
 SQLAlchemy==2.0.36
 requests==2.32.3
 beautifulsoup4==4.12.3
+lxml>=5.3
+cssselect>=1.2
 APScheduler==3.11.0
 python-multipart==0.0.20
 # Только для прод-деплоя (Replit) с базой на Turso — см. находку 2026-09-29

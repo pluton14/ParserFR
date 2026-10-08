@@ -67,6 +67,14 @@ export interface ContextWord {
   percentage: number;
 }
 
+export interface CategoryStat {
+  category: string;
+  articles_with_word: number;
+  category_articles: number;
+  percentage: number;
+  occurrences: number;
+}
+
 export interface KeywordStats {
   keyword: string;
   articles_with_word: number;
@@ -75,6 +83,8 @@ export interface KeywordStats {
   total_occurrences: number;
   left_context_words: ContextWord[];
   right_context_words: ContextWord[];
+  // Пусто у анализов, посчитанных до появления разбивки по категориям.
+  categories?: CategoryStat[];
 }
 
 export interface TimeseriesPoint {
@@ -83,7 +93,11 @@ export interface TimeseriesPoint {
   articles: number;
 }
 
-export type TextScope = "body" | "title" | "title_body";
+export type Zone = "title" | "captions" | "body";
+
+// Набор зон одной строкой: прежние "body" | "title" | "title_body" либо список
+// через запятую из title, captions, body.
+export type TextScope = string;
 
 export interface AnalysisSummary {
   id: number;
@@ -108,6 +122,8 @@ export interface CategoryCount {
 
 export interface AnalysisDetail extends AnalysisSummary {
   articles_in_corpus: number;
+  // null — анализ посчитан до появления этой цифры.
+  total_words?: number | null;
   stats: KeywordStats[];
   timeseries: Record<string, TimeseriesPoint[]>;
 }
