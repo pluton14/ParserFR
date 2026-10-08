@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -12,6 +14,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import settings
+from .db import _USING_TURSO as USING_TURSO
 from .db import init_db, session_scope
 from .routers import analyses, corpus, dictionaries, jobs
 from .services.jobs import recover_stale_jobs
@@ -31,16 +34,41 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    init_db()
+def _startup_tasks() -> None:
+    """Всё, что обращается к базе при запуске, с замерами по шагам.
+
+    Находка 2026-10-08: на Turso (удалённая база) этот блок занимает заметное
+    время — Replit не дождался открытия порта и откатил публикацию. Поэтому на
+    удалённой базе он выполняется в фоне, а сервер открывает порт сразу.
+    """
+    def step(name, fn):
+        started = time.perf_counter()
+        fn()
+        logger.info("Запуск: %s — %.1f с", name, time.perf_counter() - started)
+
+    step("инициализация схемы базы", init_db)
     # Задачи, оставшиеся «выполняющимися» после падения процесса, живыми
     # уже не станут — честнее сразу показать их упавшими.
-    recover_stale_jobs()
-    start_scheduler()
+    step("восстановление зависших задач", recover_stale_jobs)
+    step("планировщик автосбора", start_scheduler)
     # Независим от scheduler_enabled: это пользовательская кнопка "попробовать
     # снова через N часов", не ночной автосбор.
-    start_retry_scheduler()
+    step("планировщик отложенного повтора", start_retry_scheduler)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    if USING_TURSO:
+        def background() -> None:
+            try:
+                _startup_tasks()
+            except Exception:  # noqa: BLE001 — сервер уже слушает порт, пусть работает
+                logger.exception("Фоновая инициализация не завершилась")
+
+        threading.Thread(target=background, name="startup-tasks", daemon=True).start()
+        logger.info("Удалённая база: инициализация идёт в фоне, порт открывается сразу")
+    else:
+        _startup_tasks()
     try:
         yield
     finally:

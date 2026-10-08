@@ -8,6 +8,8 @@ beautifulsoup4==4.12.3
 lxml>=5.3
 cssselect>=1.2
 APScheduler==3.11.0
+# База часовых поясов для расписания (Europe/Paris): в окружении Replit/Nix системной tzdata может не быть.
+tzdata>=2024.1
 python-multipart==0.0.20
 # Только для прод-деплоя (Replit) с базой на Turso — см. находку 2026-09-29
 # в db.py. Локально не используется, обычный sqlite-файл остаётся как есть.
