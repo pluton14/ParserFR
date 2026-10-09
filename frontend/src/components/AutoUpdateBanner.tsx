@@ -64,19 +64,27 @@ export default function AutoUpdateBanner() {
       }
       // Задача «выполнена», но источник мог не отдать часть дней — проверяем
       // по самому покрытию, а не по статусу задачи.
+      //
+      // Находка 2026-10-09: день со статусом "partial" — это НЕ проблема, а
+      // нормальная цена сбора с живого сайта (день полностью обработан, но
+      // несколько статей не выдались даже после повторов — см. комментарий
+      // в _run_download_loop). Предупреждение должно появляться только если
+      // день вообще не был по-настоящему собран: отсутствует в покрытии,
+      // остался pending/running, либо упал листинг (failed).
       if (start && end) {
         try {
           const days = await api.corpusCoverage(start, end);
-          const done = new Set(days.filter((d) => d.status === "done").map((d) => d.day));
-          const missing: string[] = [];
+          const byDay = new Map(days.map((d) => [d.day, d.status]));
+          const notCovered: string[] = [];
           for (let t = Date.parse(start); t <= Date.parse(end); t += 86400000) {
             const iso = new Date(t).toISOString().slice(0, 10);
-            if (!done.has(iso)) missing.push(iso);
+            const status = byDay.get(iso);
+            if (status !== "done" && status !== "partial") notCovered.push(iso);
           }
-          if (missing.length > 0) {
+          if (notCovered.length > 0) {
             setProblem({
               jobId: job.id,
-              text: `Данные актуализированы не полностью: не получены дни ${missing.join(", ")}.`,
+              text: `Данные актуализированы не полностью: не получены дни ${notCovered.join(", ")}.`,
             });
             return;
           }
