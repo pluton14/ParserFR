@@ -20,7 +20,7 @@ from ..services.pacing import MAX_WORKERS, pacing
 from ..services.harvest import run_download_pending, run_harvest
 from ..services.jobs import registry
 from ..services.retry_scheduler import cancel_retry, get_scheduled_retry, schedule_retry
-from ..services.scheduler import next_run_time
+from ..services.scheduler import next_run_time, plan_catch_up, trigger_auto_update_now
 
 router = APIRouter(prefix="/api/corpus", tags=["corpus"])
 
@@ -116,6 +116,57 @@ def corpus_categories(db: Session = Depends(get_db)) -> list[dict]:
         .order_by(func.count().desc())
     ).all()
     return [{"category": category, "count": count} for category, count in rows if category]
+
+
+@router.post("/run-auto-update-now", status_code=202)
+def run_auto_update_now() -> dict:
+    """Запускает прямо сейчас ту же проверку окна и тот же сбор, что сработает
+    по расписанию в 00:30 — чтобы проверить автообновление, не дожидаясь часа
+    и не перезапуская сервер. Задача получает trigger="schedule" — на фронте
+    её покажет та же плашка, что и настоящее ночное обновление."""
+    if settings.readonly_demo:
+        raise HTTPException(status_code=403, detail="В демо-копии сбор отключён.")
+    if not settings.admin_tools_enabled:
+        raise HTTPException(status_code=403, detail="Инструмент выключен (ADMIN_TOOLS_ENABLED).")
+    active = registry.active_of_type(JobType.HARVEST.value)
+    if active is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "Сбор уже идёт.", "job_id": active.id},
+        )
+    result = trigger_auto_update_now()
+    return {
+        "ok": True,
+        "started": result["started"],
+        "window_start": result["start"].isoformat(),
+        "window_end": result["end"].isoformat(),
+        "message": (
+            "Запущено — следите за задачей сбора."
+            if result["started"]
+            else "Окно уже полностью собрано — запускать нечего."
+        ),
+    }
+
+
+@router.get("/auto-update-window")
+def auto_update_window() -> dict:
+    """Что считает окном автообновления прямо сейчас — для отображения на фронте
+    перед нажатием кнопки проверки."""
+    return {
+        "enabled": settings.admin_tools_enabled,
+        **_window_json(plan_catch_up()),
+    }
+
+
+def _window_json(plan: dict) -> dict:
+    return {
+        "today": plan["today"].isoformat(),
+        "start": plan["start"].isoformat(),
+        "end": plan["end"].isoformat(),
+        "window_done": plan["window_done"],
+        "missing": [d.isoformat() for d in plan["missing"]],
+        "last_day": plan["last_day"].isoformat() if plan["last_day"] else None,
+    }
 
 
 @router.get("/schedule")

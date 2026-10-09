@@ -96,6 +96,21 @@ export const api = {
     return request<DayCoverage[]>(`/api/corpus/coverage${qs ? `?${qs}` : ""}`);
   },
   corpusSchedule: () => request<ScheduleInfo>("/api/corpus/schedule"),
+  autoUpdateWindow: () =>
+    request<{
+      enabled: boolean;
+      today: string;
+      start: string;
+      end: string;
+      window_done: boolean;
+      missing: string[];
+      last_day: string | null;
+    }>("/api/corpus/auto-update-window"),
+  runAutoUpdateNow: () =>
+    request<{ ok: boolean; started: boolean; window_start: string; window_end: string; message: string }>(
+      "/api/corpus/run-auto-update-now",
+      { method: "POST" },
+    ),
   startHarvest: (data: { start_date: string; end_date: string; refresh?: boolean }) =>
     request<Job>("/api/corpus/harvest", { method: "POST", body: JSON.stringify(data) }),
   corpusRange: () =>

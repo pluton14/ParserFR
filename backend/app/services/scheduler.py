@@ -140,6 +140,24 @@ def catch_up_on_start() -> None:
     _submit_window("startup_catchup", plan)
 
 
+def trigger_auto_update_now() -> dict:
+    """Ручной прогон логики автообновления — та же проверка окна и тот же
+    запуск сбора, что сработает сам по расписанию в 00:30 (или при старте
+    сервера). Для проверки «сработает ли по таймеру», не дожидаясь часа.
+
+    Поднимает RuntimeError, если сбор уже идёт (отдельная проверка в
+    вызывающем коде устраняет очевидную гонку, но не гарантирует атомарность —
+    как и у остальных ручных кнопок сбора в этом проекте).
+    """
+    if registry.active_of_type(JobType.HARVEST.value):
+        raise RuntimeError("already_active")
+    plan = plan_catch_up()
+    if plan["window_done"]:
+        return {"started": False, "start": plan["start"], "end": plan["end"], "missing": []}
+    _submit_window("schedule", plan)
+    return {"started": True, "start": plan["start"], "end": plan["end"], "missing": plan["missing"]}
+
+
 def start_scheduler() -> BackgroundScheduler | None:
     global _scheduler
     if not settings.scheduler_enabled:

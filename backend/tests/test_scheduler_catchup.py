@@ -3,6 +3,7 @@
 import sys
 from datetime import date, datetime
 from pathlib import Path
+import pytest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -109,3 +110,42 @@ def test_catch_up_skipped_right_after_another_harvest(app_env):
     with session_scope() as db:
         db.add(Job(id="recent", type="harvest", created_at=datetime.utcnow()))
     _run_catch_up(scheduler).assert_not_called()
+
+
+def test_trigger_auto_update_now_submits_same_window_as_nightly(app_env):
+    from app.db import session_scope
+    from app.services import scheduler
+
+    with session_scope() as db:
+        db.add(_day(date(2026, 9, 1), "done"))
+    with patch.object(scheduler, "_today", return_value=TODAY), patch.object(
+        scheduler.registry, "active_of_type", return_value=None
+    ), patch.object(scheduler.registry, "submit") as submit:
+        result = scheduler.trigger_auto_update_now()
+    assert result["started"] is True
+    assert (result["start"], result["end"]) == (date(2026, 10, 3), date(2026, 10, 5))
+    params = submit.call_args.kwargs["params"]
+    assert params["trigger"] == "schedule"  # на фронте подхватит та же плашка
+
+
+def test_trigger_auto_update_now_reports_window_already_done(app_env):
+    from app.db import session_scope
+    from app.services import scheduler
+
+    with session_scope() as db:
+        for d in (3, 4, 5):
+            db.add(_day(date(2026, 10, d), "done"))
+    with patch.object(scheduler, "_today", return_value=TODAY), patch.object(
+        scheduler.registry, "active_of_type", return_value=None
+    ), patch.object(scheduler.registry, "submit") as submit:
+        result = scheduler.trigger_auto_update_now()
+    assert result["started"] is False
+    submit.assert_not_called()
+
+
+def test_trigger_auto_update_now_refuses_while_harvest_active(app_env):
+    from app.services import scheduler
+
+    with patch.object(scheduler.registry, "active_of_type", return_value=object()):
+        with pytest.raises(RuntimeError):
+            scheduler.trigger_auto_update_now()

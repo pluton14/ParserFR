@@ -35,6 +35,9 @@ export default function CorpusPage() {
   const [ltSaving, setLtSaving] = useState(false);
   const [ltSaved, setLtSaved] = useState(false);
   const [scheduledRetry, setScheduledRetry] = useState<{ mode: string; fire_at: string } | null>(null);
+  const [autoWindow, setAutoWindow] = useState<{ enabled: boolean; start: string; end: string; window_done: boolean; missing: string[] } | null>(null);
+  const [autoTesting, setAutoTesting] = useState(false);
+  const [autoTestMessage, setAutoTestMessage] = useState<string | null>(null);
   const [retryDelayInput, setRetryDelayInput] = useState("2");
   const [retrySaving, setRetrySaving] = useState(false);
   const { job } = useJobProgress(jobId);
@@ -104,7 +107,25 @@ export default function CorpusPage() {
       })
       .catch(() => {});
     api.getScheduledRetry().then(setScheduledRetry).catch(() => {});
+    api.autoUpdateWindow().then(setAutoWindow).catch(() => {});
   }, []);
+
+  // Ручная проверка автообновления: тот же код, что сработает по таймеру в
+  // 00:30, без ожидания часа. Задача получает trigger="schedule", поэтому её
+  // прогресс покажет та же плавающая плашка, что и настоящее ночное обновление.
+  const testAutoUpdate = async () => {
+    setAutoTesting(true);
+    setAutoTestMessage(null);
+    try {
+      const res = await api.runAutoUpdateNow();
+      setAutoTestMessage(res.message);
+      api.autoUpdateWindow().then(setAutoWindow).catch(() => {});
+    } catch (e) {
+      setAutoTestMessage(e instanceof ApiError ? e.message : "Не удалось запустить проверку");
+    } finally {
+      setAutoTesting(false);
+    }
+  };
 
   // Живое обновление цифр и процента покрытия: раз в 15 с, пока вкладка открыта.
   useEffect(() => {
@@ -335,6 +356,24 @@ export default function CorpusPage() {
             . Потолок применяется сразу, число потоков — со следующего запуска сбора. 0 в поле потолка = без ограничения.
           </span>
         </div>
+        {autoWindow?.enabled && (
+        <div className="row" style={{ marginBottom: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <button className="secondary" onClick={testAutoUpdate} disabled={autoTesting}>
+            {autoTesting ? "Проверяем…" : "Проверить автообновление сейчас"}
+          </button>
+          <span className="muted" style={{ maxWidth: 480 }}>
+            Запускает прямо сейчас ту же проверку и тот же сбор, что сработает по расписанию в 00:30 (Europe/Paris) —
+            без ожидания часа.
+            {autoWindow && (
+              <>
+                {" "}Окно: {autoWindow.start} — {autoWindow.end}
+                {autoWindow.window_done ? ", уже полностью собрано." : `, не собрано: ${autoWindow.missing.join(", ")}.`}
+              </>
+            )}
+            {autoTestMessage && <> <b>{autoTestMessage}</b></>}
+          </span>
+        </div>
+        )}
         <div className="row" style={{ marginBottom: 12, alignItems: "flex-end" }}>
           <div>
             <label>Отложенный повтор (докачка) через, ч</label>

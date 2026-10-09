@@ -89,11 +89,23 @@ export default function AutoUpdateBanner() {
 
     const tick = async () => {
       try {
-        const jobs = (await api.listJobs(15)).filter(isAuto);
+        // Находка 2026-10-09: пока задача идёт, её прогресс (current/total/
+        // message) обновляется только в памяти процесса — в строку Job в базе
+        // он пишется лишь при старте и при завершении (registry.sync() по ходу
+        // работы нигде не вызывается). /api/jobs (listJobs) читает именно базу,
+        // поэтому всю дорогу отдавал бы начальный снимок («подготовка», 0/0).
+        // /api/jobs/active, наоборот, берёт состояние из памяти — им и сверяем,
+        // жива ли автозадача прямо сейчас.
+        const live = (await api.getActiveJobs()).filter(isAuto).find(isLive) ?? null;
         if (stopped) return;
-        const live = jobs.find(isLive) ?? null;
         setRunning(live);
         if (!live) {
+          // Задача уже не в памяти — либо закончилась (тогда в базе лежит
+          // честный финальный снимок, _persist писал его в конце), либо
+          // процесс перезапустился посреди неё. В обоих случаях дальше смотрим
+          // в базу через /api/jobs.
+          const jobs = (await api.listJobs(15)).filter(isAuto);
+          if (stopped) return;
           const latest = jobs
             .slice()
             .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))[0];
