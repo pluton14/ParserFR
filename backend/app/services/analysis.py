@@ -244,8 +244,21 @@ def run_analysis(
             "Сначала соберите корпус на вкладке «Корпус»."
         )
 
-    approx = "" if total_in_corpus is not None else "≈"
-    job.log(f"Статей с текстом: {approx}{expected}")
+    # Находка 2026-10-09: число из estimate_articles_with_text — быстрая оценка
+    # по кэшу покрытия дней, нужна только чтобы полоска прогресса не ждала
+    # минуты на точный COUNT. Пользователю её не показываем вовсе (ни тут, ни
+    # в сообщениях ниже) — она может разойтись с реальным итогом (например,
+    # когда ссылка на статью задвоена между соседними днями и число ok/truncated
+    # дня в кэше чуть отличается от того, что реально есть в базе под этим
+    # днём), и такое несовпадение на экране выглядит как ошибка, хотя это не
+    # она. Сама полоска прогресса при этом не портится: total у неё растёт
+    # вместе с seen (max(expected, seen) ниже) и в конце принудительно
+    # выравнивается до 100% (см. stage="done" в конце функции) — то есть
+    # скорость подсчёта не теряется, скрывается только сырая цифра оценки.
+    if total_in_corpus is not None:
+        job.log(f"Статей с текстом: {expected}")
+    else:
+        job.log("Считаем статьи…")
     job.set_progress(stage="scanning", current=0, total=expected,
                      message="Сканируем статьи…")
 
@@ -354,11 +367,13 @@ def run_analysis(
             )
             fetch_total = scan_total = 0.0
 
-        job.set_progress(
-            current=seen,
-            total=max(expected, seen),
-            message=f"Обработано {seen}/{approx}{max(expected, seen)}",
-        )
+        # Числитель (seen) всегда точный — это реально просмотренные статьи.
+        # Знаменатель пользователю не показываем, когда он лишь оценка
+        # (total_in_corpus is None) — см. комментарий выше про возможное
+        # расхождение; полоска прогресса (total=) при этом использует оценку
+        # как и раньше, без потери скорости.
+        message = f"Обработано {seen}/{max(expected, seen)}" if total_in_corpus is not None else f"Обработано {seen}"
+        job.set_progress(current=seen, total=max(expected, seen), message=message)
 
     with_text = seen
 

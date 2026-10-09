@@ -73,3 +73,47 @@ def test_old_analyses_without_new_fields_still_open(app_env):
     detail = TestClient(app).get(f"/api/analyses/{aid}").json()
     assert detail["total_words"] is None
     assert detail["stats"][0]["categories"] == []
+
+
+def test_user_facing_progress_never_shows_the_raw_estimate(app_env):
+    """Находка 2026-10-09: оценка из estimate_articles_with_text (по кэшу
+    покрытия дней) может разойтись с реальным итогом — пользователю её не
+    показываем вовсе, ни в логе, ни в живом сообщении прогресса. Числитель
+    (реально просмотренные статьи) остаётся точным всегда."""
+    from app.db import session_scope
+    from app.models import Analysis, HarvestedDay, Job, JobStatus
+    from app.services.analysis import run_analysis
+    from app.services.jobs import JobHandle
+
+    keywords = ["guerre en Ukraine"]
+    with session_scope() as db:
+        db.add(_article("http://a/1", "Politique", "la guerre en Ukraine continue"))
+        # Кэш покрытия дня намеренно "врёт" (сильно завышен) — как раз тот
+        # случай, который раньше показывался пользователю как ≈2.
+        db.add(HarvestedDay(day=date(2020, 1, 1), sitemap_url="x", total_urls=1,
+                            ok_count=50, status="done"))
+        db.add(Job(id="job-1", type="analysis"))
+        db.add(Analysis(start_date=date(2020, 1, 1), end_date=date(2020, 1, 1),
+                        keywords=keywords, status=JobStatus.RUNNING.value, text_scope="body"))
+    with session_scope() as db:
+        analysis_id = db.query(Analysis).one().id
+    job = JobHandle(id="job-1", type="analysis")
+    # set_progress() не пишет в job.logs (это для живого прогресса, не для
+    # текстового лога) — перехватываем сами вызовы, чтобы увидеть сообщения,
+    # которые реально уходят в интерфейс по ходу сканирования.
+    messages: list[str] = []
+    original_set_progress = job.set_progress
+
+    def tracking_set_progress(*args, **kwargs):
+        original_set_progress(*args, **kwargs)
+        if kwargs.get("message"):
+            messages.append(kwargs["message"])
+
+    job.set_progress = tracking_set_progress
+    run_analysis(job, analysis_id, date(2020, 1, 1), date(2020, 1, 1), keywords, text_scope="body")
+
+    texts = [entry["text"] for entry in job.logs]
+    assert not any("≈" in t or "50" in t for t in texts), texts
+    assert not any("≈" in m or "50" in m for m in messages), messages
+    assert any(t == "Считаем статьи…" for t in texts)
+    assert any(m == "Обработано 1" for m in messages), messages

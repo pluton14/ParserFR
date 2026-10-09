@@ -93,3 +93,75 @@ def test_endpoint_blocked_in_readonly_demo(app_env, monkeypatch):
     monkeypatch.setattr(settings, "readonly_demo", True)
     resp = TestClient(app).post("/api/corpus/run-auto-update-now")
     assert resp.status_code == 403
+
+
+def test_single_day_endpoint_disabled_by_default(app_env):
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    resp = TestClient(app).post("/api/corpus/test-single-day-harvest")
+    assert resp.status_code == 403
+
+
+def test_single_day_endpoint_submits_exactly_one_day(app_env, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.config import settings
+    from app.main import app
+    from app.routers import corpus as corpus_router
+
+    monkeypatch.setattr(settings, "admin_tools_enabled", True)
+    client = TestClient(app)
+
+    with patch.object(corpus_router.registry, "active_of_type", return_value=None), patch.object(
+        corpus_router.registry, "submit"
+    ) as submit:
+        submit.return_value.id = "job-x"
+        resp = client.post("/api/corpus/test-single-day-harvest?day=2020-05-01")
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["day"] == "2020-05-01"
+    params = submit.call_args.kwargs["params"]
+    assert params["trigger"] == "schedule"
+    assert params["start_date"] == params["end_date"] == "2020-05-01"
+
+
+def test_single_day_endpoint_defaults_to_two_weeks_ago(app_env, monkeypatch):
+    from datetime import date, timedelta
+
+    from fastapi.testclient import TestClient
+
+    from app.config import settings
+    from app.main import app
+    from app.routers import corpus as corpus_router
+
+    monkeypatch.setattr(settings, "admin_tools_enabled", True)
+    client = TestClient(app)
+    expected = (date.today() - timedelta(days=14)).isoformat()
+
+    with patch.object(corpus_router.registry, "active_of_type", return_value=None), patch.object(
+        corpus_router.registry, "submit"
+    ) as submit:
+        submit.return_value.id = "job-y"
+        resp = client.post("/api/corpus/test-single-day-harvest")
+    assert resp.status_code == 202
+    assert resp.json()["day"] == expected
+
+
+def test_single_day_endpoint_conflicts_when_harvest_active(app_env, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.config import settings
+    from app.main import app
+    from app.routers import corpus as corpus_router
+
+    monkeypatch.setattr(settings, "admin_tools_enabled", True)
+    client = TestClient(app)
+
+    class FakeActive:
+        id = "job-busy"
+
+    with patch.object(corpus_router.registry, "active_of_type", return_value=FakeActive()):
+        resp = client.post("/api/corpus/test-single-day-harvest")
+    assert resp.status_code == 409

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -146,6 +146,41 @@ def run_auto_update_now() -> dict:
             else "Окно уже полностью собрано — запускать нечего."
         ),
     }
+
+
+@router.post("/test-single-day-harvest", status_code=202)
+def test_single_day_harvest(day: date | None = Query(default=None)) -> dict:
+    """Собирает РОВНО ОДИН день — сквозная ручная проверка «фронт+бэк
+    работают», без ожидания настоящего автообновления и без лишней нагрузки
+    на источник (всего один день, а не трёхдневное окно). За тем же флагом
+    ADMIN_TOOLS_ENABLED, новых секретов не требует.
+
+    По умолчанию берёт день две недели назад — почти наверняка не тронутый
+    недавними прогонами, чтобы было видно настоящую работу, а не мгновенный
+    no-op по уже собранному дню. Можно передать свой ?day=YYYY-MM-DD.
+    Задача получает trigger="schedule" — её покажет та же плашка
+    автообновления, что видна на сайте (на вкладку «Корпус» она не завязана)."""
+    if settings.readonly_demo:
+        raise HTTPException(status_code=403, detail="В демо-копии сбор отключён.")
+    if not settings.admin_tools_enabled:
+        raise HTTPException(status_code=403, detail="Инструмент выключен (ADMIN_TOOLS_ENABLED).")
+    active = registry.active_of_type(JobType.HARVEST.value)
+    if active is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "Сбор уже идёт.", "job_id": active.id},
+        )
+    target_day = day or (date.today() - timedelta(days=14))
+    job = registry.submit(
+        JobType.HARVEST.value,
+        lambda handle: run_harvest(handle, target_day, target_day, refresh=False),
+        params={
+            "trigger": "schedule",
+            "start_date": target_day.isoformat(),
+            "end_date": target_day.isoformat(),
+        },
+    )
+    return {"ok": True, "day": target_day.isoformat(), "job_id": job.id}
 
 
 @router.get("/auto-update-window")
