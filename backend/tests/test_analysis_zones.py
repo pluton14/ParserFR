@@ -62,6 +62,36 @@ def _run(scope, keywords):
         return row.total_processed_articles, unpack(row.statistics_gz)["statistics"]
 
 
+def test_mixed_zones_keep_article_without_extracted_captions(app_env):
+    """Находка 2026-10-09: title+captions+body не должен выкидывать статью
+    целиком из-за одних лишь отсутствующих подписей — заголовок и текст у неё
+    есть, и слово должно найтись именно в них."""
+    from app.db import session_scope
+
+    with session_scope() as db:
+        # extracted=0 — подписи у статьи ещё не извлекали (как у всех,
+        # собранных до backfill); заголовок и текст при этом полноценные.
+        db.add(_article("u1", "Titre avec guerre en Ukraine", "le texte sans le mot",
+                        extracted=0))
+
+    total, stats = _run("title,captions,body", ["guerre en Ukraine"])
+    assert total == 1, "статья без извлечённых подписей не должна пропадать из выборки"
+    assert stats["guerre en Ukraine"]["articles_with_word"] == 1, "слово должно найтись в заголовке"
+
+
+def test_captions_only_zone_still_excludes_unextracted_from_denominator(app_env):
+    """А для ЕДИНСТВЕННОЙ зоны «подписи» прежнее поведение сохраняется:
+    статьи без извлечённых подписей не засоряют знаменатель."""
+    from app.db import session_scope
+
+    with session_scope() as db:
+        db.add(_article("u1", "Titre", "texte", captions="Un char russe.", extracted=1))
+        db.add(_article("u2", "Titre", "texte", extracted=0))  # подписи не извлекались
+
+    total, stats = _run("captions", ["char russe"])
+    assert total == 1, "статья без извлечённых подписей не должна попасть в знаменатель зоны «подписи»"
+
+
 def test_captions_zone_finds_words_only_in_captions(app_env):
     from app.db import session_scope
 

@@ -12,6 +12,8 @@ Turso-псевдонимы без префикса), подключаемся к
 ни на строчку.
 """
 
+import logging
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 
@@ -20,6 +22,8 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import QueuePool
 
 from .config import settings
+
+logger = logging.getLogger(__name__)
 
 _USING_TURSO = bool(settings.turso_database_url and settings.turso_auth_token)
 
@@ -99,10 +103,43 @@ def session_scope() -> Iterator[Session]:
         yield db
         db.commit()
     except Exception:
-        db.rollback()
+        # На удалённой базе (Turso) транзакция может быть уже закрыта сервером,
+        # и сам rollback падает («no transaction is active»). Это вторичная
+        # ошибка — она не должна затирать настоящую причину сбоя.
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            logger.warning("rollback не удался (транзакция уже закрыта сервером)", exc_info=True)
         raise
     finally:
         db.close()
+
+
+# Находка 2026-10-08: на Turso каждая операция идёт по сети, поэтому транзакция
+# на сотни вставок живёт минуты, и сервер её закрывает — commit падает. На
+# удалённой базе пишем маленькими транзакциями и повторяем при временном сбое;
+# локально ничего не меняется (всё одной пачкой, без повторов).
+REMOTE_WRITE_CHUNK = 10
+
+
+def write_chunks(items: list) -> Iterator[list]:
+    if not _USING_TURSO or len(items) <= REMOTE_WRITE_CHUNK:
+        yield items
+        return
+    for i in range(0, len(items), REMOTE_WRITE_CHUNK):
+        yield items[i:i + REMOTE_WRITE_CHUNK]
+
+
+def retry_write(fn, attempts: int = 3):
+    """Выполняет запись; на удалённой базе повторяет до attempts раз при сбое."""
+    for attempt in range(1, attempts + 1):
+        try:
+            return fn()
+        except Exception:
+            if not _USING_TURSO or attempt == attempts:
+                raise
+            logger.warning("Запись в удалённую базу не удалась (попытка %d/%d), повторяем", attempt, attempts, exc_info=True)
+            time.sleep(1.0 * attempt)
 
 
 def init_db() -> None:

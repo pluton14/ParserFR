@@ -32,7 +32,7 @@ from ..core.figaro import (
     list_daily_sitemaps,
 )
 from ..core.tokenizer import tokenize_french_text
-from ..db import session_scope
+from ..db import retry_write, session_scope, write_chunks
 from ..models import Article, ArticleStatus, DayStatus, HarvestedDay
 from .jobs import JobHandle
 from .pacing import pacing
@@ -471,43 +471,53 @@ def _persist_pending_urls(day: date, urls: list[str]) -> None:
     """
     if not urls:
         return
-    with session_scope() as db:
-        # `seen` защищает не только от дублей, уже лежащих в базе, но и от
-        # повтора внутри самого списка urls за этот вызов — на случай, если
-        # вызывающий код (пока) не дедуплицировал сам. Дедуп на входе в
-        # run_harvest уже есть (см. комментарий там), но эта функция
-        # достаточно простая и переиспользуемая, чтобы не полагаться на
-        # чужую дисциплину — лучше не упасть второй раз похожим образом.
-        seen = set(
-            db.execute(select(Article.url).where(Article.url.in_(urls))).scalars()
-        )
-        for url in urls:
-            if url not in seen:
-                seen.add(url)
-                db.add(Article(url=url, published_date=day, status=ArticleStatus.PENDING.value))
+    # Дедуп внутри самого списка — на случай, если вызывающий код не сделал его
+    # сам (в run_harvest он есть, но эта функция переиспользуемая). Порядок сохраняем.
+    urls = list(dict.fromkeys(urls))
+
+    def write(chunk: list[str]) -> None:
+        with session_scope() as db:
+            # `seen` защищает от дублей, уже лежащих в базе.
+            seen = set(
+                db.execute(select(Article.url).where(Article.url.in_(chunk))).scalars()
+            )
+            for url in chunk:
+                if url not in seen:
+                    seen.add(url)
+                    db.add(Article(url=url, published_date=day, status=ArticleStatus.PENDING.value))
+
+    # На удалённой базе — маленькими транзакциями с повтором (см. db.write_chunks).
+    for chunk in write_chunks(urls):
+        retry_write(lambda c=chunk: write(c))
 
 
 def _persist_batch(batch: list[tuple[str, FetchedArticle | None, str, date]]) -> None:
     if not batch:
         return
-    with session_scope() as db:
-        urls = [item[0] for item in batch]
-        existing = {
-            row.url: row
-            for row in db.execute(select(Article).where(Article.url.in_(urls))).scalars()
-        }
-        for url, fetched, status, day in batch:
-            article = existing.get(url)
-            if article is None:
-                article = Article(url=url, published_date=day)
-                db.add(article)
-            article.published_date = day
-            article.status = status
-            if fetched is not None:
-                article.title = fetched.title
-                article.category = fetched.category
-                article.set_content(fetched.text, tokenize_french_text(fetched.text))
-                article.set_captions(fetched.captions)
+
+    def write(part: list) -> None:
+        with session_scope() as db:
+            urls = [item[0] for item in part]
+            existing = {
+                row.url: row
+                for row in db.execute(select(Article).where(Article.url.in_(urls))).scalars()
+            }
+            for url, fetched, status, day in part:
+                article = existing.get(url)
+                if article is None:
+                    article = Article(url=url, published_date=day)
+                    db.add(article)
+                article.published_date = day
+                article.status = status
+                if fetched is not None:
+                    article.title = fetched.title
+                    article.category = fetched.category
+                    article.set_content(fetched.text, tokenize_french_text(fetched.text))
+                    article.set_captions(fetched.captions)
+
+    # На удалённой базе — маленькими транзакциями с повтором (см. db.write_chunks).
+    for part in write_chunks(batch):
+        retry_write(lambda p=part: write(p))
 
 
 def _count_by_status(day: date) -> dict[str, int]:
