@@ -15,3 +15,7 @@ PYTHONUNBUFFERED = "1"
 [deployment]
 deploymentTarget = "cloudrun"
 run = "bash start.sh"
+
+[userenv]
+
+[userenv.shared]
