@@ -10,3 +10,11 @@ frontend/dist/
 build/
 dist/
 __pycache__/
+
+# Служебные файлы: меняются при каждой локальной сборке/запуске И при каждой
+# публикации на Replit — в git только шумят и вызывают конфликты, реальной
+# ценности в истории не несут.
+frontend/tsconfig.tsbuildinfo
+backend/uvicorn.log
+backend/uvicorn.err.log
+frontend/vite.log
